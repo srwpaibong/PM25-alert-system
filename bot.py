@@ -7,9 +7,9 @@ import datetime
 import pytz
 
 # --- Configuration ---
-LINE_TOKEN = os.getenv('LINE_ACCESS_TOKEN')
-USER_ID = os.getenv('LINE_USER_ID')
-API_KEY = os.getenv('AIR4THAI_KEY')
+LINE_TOKEN = os.getenv('0reGsCLQ5LzUTW+U+iN6UCoFhJZla0MlhVo0dE0hxn0+9lEvHnqvXocUBVk2Zm/q1MaFFE+rKBbL0x4gEuSVC+oKtwARhJiK/6gC/dp9C+5MPnYw8u1RWjGOfaR+v+w2eDZrQV9XrKWzlJ4TJcz86QdB04t89/1O/w1cDnyilFU=')
+USER_ID = os.getenv('U8dcdca2a2fc077c890d08224d6b60938')
+API_KEY = os.getenv('qQQt8GFNs6ar00pAsqbI')
 GITHUB_REPO = os.getenv('GITHUB_REPOSITORY') # ดึงชื่อ User/Repo อัตโนมัติ
 
 LOG_FILE = "log.json"
