@@ -1,0 +1,37 @@
+name: PM25-Automation
+on:
+  schedule:
+    - cron: '0 0-10,12,15,17 * * *' # ตั้งเวลาเช็คทุกชั่วโมงในช่วงเวลาที่กำหนด
+  workflow_dispatch: # ปุ่มกดรันเอง
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Libraries
+        run: pip install -r requirements.txt
+
+      - name: Run Bot
+        env:
+          LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          AIR4THAI_KEY: ${{ secrets.AIR4THAI_KEY }}
+        run: python bot.py
+
+      - name: Update GitHub with Graphs and Log
+        run: |
+          git config --global user.name 'AirQualityBot'
+          git config --global user.email 'bot@github.com'
+          git add *.png log.json
+          git commit -m "Update graphs and log" || echo "No changes"
+          git push
