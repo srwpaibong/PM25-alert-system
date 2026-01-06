@@ -1,4 +1,5 @@
 name: PM25-Automation
+
 on:
   schedule:
     - cron: '0 0-10,12,15,17 * * *' # ตั้งเวลาเช็คทุกชั่วโมงในช่วงเวลาที่กำหนด
@@ -28,20 +29,11 @@ jobs:
           AIR4THAI_KEY: ${{ secrets.AIR4THAI_KEY }}
         run: python bot.py
 
-- name: Update GitHub with Graphs and Log
+      - name: Update GitHub with Graphs and Log
         run: |
           git config --global user.name 'AirQualityBot'
           git config --global user.email 'bot@github.com'
-          
-          # 1. บันทึกไฟล์ log.json แน่นอน (เพราะไฟล์นี้มีอยู่แล้ว)
           git add log.json
-          
-          # 2. ตรวจสอบก่อนว่ามีไฟล์ .png หรือไม่ ถ้ามีค่อย add
-          # ถ้าไม่มีคำสั่งนี้จะไม่ทำให้ระบบ Error (ใช้เครื่องหมาย || true)
           git add *.png || true
-          
-          # 3. บันทึกการเปลี่ยนแปลง (ถ้าไม่มีอะไรเปลี่ยน ระบบจะข้ามไปเอง)
           git commit -m "Update graphs and log" || echo "No changes to commit"
-          
-          # 4. อัปโหลดกลับขึ้น GitHub
           git push
