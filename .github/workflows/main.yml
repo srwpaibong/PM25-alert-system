@@ -28,10 +28,12 @@ jobs:
           AIR4THAI_KEY: ${{ secrets.AIR4THAI_KEY }}
         run: python bot.py
 
-      - name: Update GitHub with Graphs and Log
+- name: Update GitHub with Graphs and Log
         run: |
           git config --global user.name 'AirQualityBot'
           git config --global user.email 'bot@github.com'
-          git add *.png log.json
-          git commit -m "Update graphs and log" || echo "No changes"
+          # เพิ่มบรรทัดด้านล่างนี้เพื่อป้องกัน Error กรณีไม่มีไฟล์ .png
+          git add log.json
+          git add *.png || echo "No images to add" 
+          git commit -m "Update graphs and log" || echo "No changes to commit"
           git push
