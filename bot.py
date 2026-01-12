@@ -14,6 +14,8 @@ GITHUB_REPO = os.getenv('GITHUB_REPOSITORY')
 
 LOG_FILE = "log.json"
 TIMEZONE = pytz.timezone('Asia/Bangkok')
+# ช่วงเวลาที่จะให้สรุปรายงานประจำชั่วโมง (แม้จะเคยเตือนไปแล้ว)
+REPORT_HOURS = [7, 8, 9, 12, 15, 17, 20]
 
 def load_log():
     if os.path.exists(LOG_FILE):
@@ -24,62 +26,113 @@ def load_log():
 
 def get_red_stations():
     url = "http://air4thai.com/forweb/getAQI_JSON.php"
-    print("--- 1. เริ่มดึงข้อมูลจาก Air4Thai ---")
     try:
         res = requests.get(url, timeout=30).json()
         red_list = []
-        count_all = 0
         for s in res.get('stations', []):
-            count_all += 1
             s_id = s.get('stationID')
             s_type = s.get('stationType', '').lower()
             try: pm25 = float(s['AQILast']['PM25']['value'])
             except: pm25 = 0
             
-            # เงื่อนไขทดสอบ: ปรับเป็น > 0 เพื่อให้เจอทุกสถานี
-            if s_id != "11t" and s_type != "bkk" and pm25 > 0:
-                red_list.append({"id": s_id, "name": s['nameTH'], "area": s['areaTH'], "value": pm25})
-        
-        print(f"ตรวจพบทั้งหมด {count_all} สถานี")
-        print(f"ผ่านเกณฑ์คัดกรอง (ไม่ใช่ 11t/BKK และ > 0) จำนวน {len(red_list)} สถานี")
+            # เงื่อนไขใช้งานจริง: ไม่เอา 11t, ไม่เอา BKK, ต้องสีแดง (> 75.0)
+            if s_id != "11t" and s_type != "bkk" and pm25 > 75.0:
+                red_list.append({
+                    "id": s_id, 
+                    "name": s['nameTH'], 
+                    "area": s['areaTH'], 
+                    "value": pm25,
+                    "time": s['AQILast']['PM25']['datetime']
+                })
         return red_list
-    except Exception as e:
-        print(f"Error ดึงข้อมูล: {e}")
+    except:
         return []
 
+def analyze_and_plot(s_id, s_name):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    url = f"http://air4thai.com/forweb/getHistory.php?stationID={s_id}&param=PM25&type=hr"
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        if not response.text or response.status_code != 200: return "N/A", "Data Error", None
+        res = response.json()
+        df = pd.DataFrame(res['station']['data']).tail(48)
+        df['value'] = pd.to_numeric(df['value'], errors='coerce')
+        
+        # วิเคราะห์ความต่อเนื่องของข้อมูล
+        max_diff = df['value'].diff().abs().max()
+        status = "ปกติ ✅" if max_diff < 50 else "ผิดปกติ ⚠️ (พบค่ากระโดด)"
+
+        plt.figure(figsize=(10, 5))
+        plt.plot(df['datetime'], df['value'], marker='o', color='#e74c3c', linewidth=2)
+        plt.axhline(y=75.0, color='#2c3e50', linestyle='--', label='Red Line')
+        plt.title(f"Trend 48 Hours: {s_name}", fontsize=14)
+        plt.grid(True, alpha=0.3)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        
+        filename = f"graph_{s_id}.png"
+        plt.savefig(filename)
+        plt.close()
+        return status, f"Spike: {max_diff:.1f}", filename
+    except:
+        return "Error", "Connection Fail", None
+
 def send_line(message, image_url):
-    print(f"--- 3. กำลังส่ง LINE ไปยัง ID: {USER_ID[:5]}... ---")
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
+    ts = datetime.datetime.now().timestamp()
+    # ป้องกัน LINE จำภาพเก่าด้วยการเติมตัวแปรเวลา
+    full_image_url = f"{image_url}?t={int(ts)}"
+    
     payload = {
         "to": USER_ID,
         "messages": [
             {"type": "text", "text": message},
-            {"type": "image", "originalContentUrl": image_url, "previewImageUrl": image_url}
+            {
+                "type": "image", 
+                "originalContentUrl": full_image_url, 
+                "previewImageUrl": full_image_url
+            }
         ]
     }
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"LINE Response: {response.status_code} - {response.text}")
+    requests.post(url, headers=headers, json=payload)
 
 def main():
     now = datetime.datetime.now(TIMEZONE)
-    print(f"เวลาปัจจุบัน: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    today = now.strftime("%Y-%m-%d")
+    history = load_log()
     
+    # ล้างค่า Log เมื่อขึ้นวันใหม่
+    if history.get('last_date') != today:
+        history = {"last_date": today, "alerted_ids": []}
+
     red_stations = get_red_stations()
-    
     if not red_stations:
-        print("❌ จบการทำงาน: ไม่พบสถานีที่ตรงตามเงื่อนไข")
+        with open(LOG_FILE, 'w') as f: json.dump(history, f)
         return
 
-    print(f"--- 2. เริ่มขั้นตอนการส่งข้อความ (บังคับส่ง True) ---")
-    # บังคับส่งสถานีแรกที่เจอเพื่อทดสอบ
-    s = red_stations[0]
-    msg = f"🧪 ทดสอบระบบส่งข้อความ\n📍 {s['name']}\n💨 PM2.5: {s['value']}"
-    # ใช้รูปภาพตัวอย่างจากเน็ตเพื่อทดสอบว่า LINE ยอมรับรูปไหม
-    test_img = "https://www.air4thai.com/forweb/assets/img/logo_pcd_air4thai.png"
+    current_ids = [s['id'] for s in red_stations]
+    new_ids = [i for i in current_ids if i not in history.get('alerted_ids', [])]
     
-    send_line(msg, test_img)
-    print("✅ สิ้นสุดการทำงานหลัก")
+    # ส่งแจ้งเตือนถ้า: 1. มีสถานีแดงใหม่ หรือ 2. ถึงเวลาสรุปประจำชั่วโมง
+    if new_ids or (now.hour in REPORT_HOURS):
+        for s in red_stations:
+            status, detail, img_file = analyze_and_plot(s['id'], s['name'])
+            
+            if img_file:
+                image_link = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{img_file}"
+                msg = (f"🚨 แจ้งเตือนฝุ่นสีแดง ({now.strftime('%H:%M')}น.)\n"
+                       f"📍 สถานี: {s['name']}\n"
+                       f"🗺️ พื้นที่: {s['area']}\n"
+                       f"💨 PM2.5: {s['value']} µg/m³\n"
+                       f"⏰ ข้อมูลเมื่อ: {s['time']}\n"
+                       f"🔍 วิเคราะห์กราฟ: {status}")
+                
+                send_line(msg, image_link)
+        
+        # บันทึกสถานีที่แจ้งไปแล้วเพื่อไม่ให้ส่งซ้ำทุกนาที
+        history['alerted_ids'] = list(set(history.get('alerted_ids', []) + current_ids))
+        with open(LOG_FILE, 'w') as f: json.dump(history, f)
 
 if __name__ == "__main__":
     main()
