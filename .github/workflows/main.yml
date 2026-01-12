@@ -34,12 +34,13 @@ jobs:
           git config --global user.name 'AirQualityBot'
           git config --global user.email 'bot@github.com'
           
-          # ดึงข้อมูลล่าสุดจาก GitHub มาอัปเดตเครื่องบอทก่อน เพื่อป้องกันความขัดแย้ง
-          git pull origin main --rebase
-          
+          # บันทึกไฟล์ที่เปลี่ยนแปลงทั้งหมดเข้าสู่ระบบเตรียมการ
           git add log.json
           git add *.png || true
+          
+          # พยายามบันทึก (Commit) ถ้าไม่มีอะไรเปลี่ยนให้ข้ามไป
           git commit -m "Update graphs and log" || echo "No changes to commit"
           
-          # ดันข้อมูลกลับขึ้นไป
+          # ดึงข้อมูลล่าสุดแบบ Autostash เพื่อหลบทางให้ไฟล์ใหม่ และดันข้อมูลขึ้นไป
+          git pull origin main --rebase --autostash
           git push origin main
