@@ -114,7 +114,7 @@ def main():
     new_ids = [i for i in current_ids if i not in history.get('alerted_ids', [])]
     
     # เงื่อนไข: ส่งเมื่อถึงเวลาที่กำหนด หรือ มีสถานีใหม่แดงขึ้นมา
-    if new_ids or (now.hour in REPORT_HOURS):
+    if True:
         for s in red_stations:
             status, detail, img_file = analyze_and_plot(s['id'], s['name'])
             if img_file:
