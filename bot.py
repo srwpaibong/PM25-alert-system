@@ -88,6 +88,33 @@ def verify_data_trend(s_id, s_name):
     except:
         return "ไม่สามารถดึงข้อมูล Trend ได้", None
 
+def verify_data_robust(s_id):
+    url = f"http://air4thai.com/forweb/getHistory.php?stationID={s_id}&param=PM25&type=hr"
+    try:
+        # เพิ่ม timeout และ headers เพื่อให้เหมือน Browser จริง
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=15) 
+        
+        if response.status_code != 200 or not response.text:
+            return "❌ ระบบฐานข้อมูลประวัติขัดข้องชั่วคราว", None
+            
+        res = response.json()
+        data = res.get('station', {}).get('data', [])
+        
+        if len(data) < 3:
+            return "⚠️ ข้อมูลประวัติไม่เพียงพอต่อการวิเคราะห์ Trend", None
+
+        # คำนวณ Trend ง่ายๆ
+        last_3_hours = [float(d['value']) for d in data[-3:]]
+        if last_3_hours[-1] > last_3_hours[0]:
+            trend_msg = "📈 แนวโน้ม: กำลังเพิ่มสูงขึ้น (ควรเฝ้าระวังพิเศษ)"
+        else:
+            trend_msg = "📉 แนวโน้ม: เริ่มลดลงหรือทรงตัว"
+            
+        return trend_msg, data
+    except:
+        return "❌ ไม่สามารถเชื่อมต่อฐานข้อมูลประวัติได้", None
+
 def send_line(s, verify_msg, img_file):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
