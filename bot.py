@@ -36,7 +36,7 @@ def get_red_stations():
             except: pm25 = 0
             
             # เงื่อนไขใช้งานจริง: ไม่เอา 11t, ไม่เอา BKK, ต้องสีแดง (> 75.0)
-            if s_id != "11t" and s_type != "bkk" and pm25 > 75.0:
+            if s_id != "11t" and s_type != "bkk" and pm25 > 37.6:
                 red_list.append({
                     "id": s_id, 
                     "name": s['nameTH'], 
@@ -115,7 +115,7 @@ def main():
     new_ids = [i for i in current_ids if i not in history.get('alerted_ids', [])]
     
     # ส่งแจ้งเตือนถ้า: 1. มีสถานีแดงใหม่ หรือ 2. ถึงเวลาสรุปประจำชั่วโมง
-    if new_ids or (now.hour in REPORT_HOURS):
+    if True:
         for s in red_stations:
             status, detail, img_file = analyze_and_plot(s['id'], s['name'])
             
