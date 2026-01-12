@@ -93,7 +93,9 @@ def send_line(message, image_url):
             {"type": "image", "originalContentUrl": full_image_url, "previewImageUrl": full_image_url}
         ]
     }
-    requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload)
+    # เพิ่มบรรทัดนี้เพื่อดูว่า LINE ตอบกลับมาว่าอะไร
+    print(f"LINE Response: {response.status_code} - {response.text}")
 
 def main():
     now = datetime.datetime.now(TIMEZONE)
