@@ -33,7 +33,13 @@ jobs:
         run: |
           git config --global user.name 'AirQualityBot'
           git config --global user.email 'bot@github.com'
+          
+          # ดึงข้อมูลล่าสุดจาก GitHub มาอัปเดตเครื่องบอทก่อน เพื่อป้องกันความขัดแย้ง
+          git pull origin main --rebase
+          
           git add log.json
           git add *.png || true
           git commit -m "Update graphs and log" || echo "No changes to commit"
-          git push
+          
+          # ดันข้อมูลกลับขึ้นไป
+          git push origin main
