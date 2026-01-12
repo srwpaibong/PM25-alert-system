@@ -12,148 +12,94 @@ USER_ID = os.getenv('LINE_USER_ID')
 GITHUB_REPO = os.getenv('GITHUB_REPOSITORY')
 TIMEZONE = pytz.timezone('Asia/Bangkok')
 
-def get_red_stations():
-    url = "http://air4thai.com/forweb/getAQI_JSON.php"
-    print("1. กำลังตรวจสอบค่าฝุ่น (เฉพาะพื้นที่สีแดง)...")
-    try:
-        res = requests.get(url, timeout=30).json()
-        red_list = []
-        for s in res.get('stations', []):
-            aqi_last = s.get('AQILast', {})
-            pm25_obj = aqi_last.get('PM25', {})
-            
-            # ดึงค่า PM2.5 และ AQI
-            try: 
-                pm25 = float(pm25_obj.get('value', 0))
-                aqi_val = s.get('AQILast', {}).get('AQI', {}).get('value', 'N/A')
-            except: 
-                continue
-            
-            # เงื่อนไข: สีแดง (> 75.0), ไม่ใช่ BKK, ไม่ใช่ 11t
-            if s.get('stationID') != "11t" and s.get('stationType', '').lower() != 'bkk' and pm25 > 75.0:
-                red_list.append({
-                    "id": s.get('stationID'),
-                    "name": s.get('nameTH'),
-                    "area": s.get('areaTH'),
-                    "pm25": pm25,
-                    "aqi": aqi_val,
-                    "time": pm25_obj.get('datetime', datetime.datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M'))
-                })
-        print(f"พบสถานีสีแดง {len(red_list)} สถานี")
-        return red_list
-    except Exception as e:
-        print(f"Error ดึงข้อมูล: {e}")
-        return []
+def calculate_thai_aqi(pm25):
+    """คำนวณ AQI ตามตารางและสูตรที่กำหนด"""
+    if pm25 <= 15.0:
+        xi, xj, ii, ij = 0, 15.0, 0, 25
+    elif pm25 <= 25.0:
+        xi, xj, ii, ij = 15.1, 25.0, 26, 50
+    elif pm25 <= 37.5:
+        xi, xj, ii, ij = 25.1, 37.5, 51, 100
+    elif pm25 <= 75.0:
+        xi, xj, ii, ij = 37.6, 75.0, 101, 200
+    else: # 75.1 ขึ้นไป
+        xi, xj, ii, ij = 75.1, 500.0, 201, 500
+        
+    aqi = ((ij - ii) / (xj - xi)) * (pm25 - xi) + ii
+    return int(round(aqi))
 
-def verify_data_trend(s_id, s_name):
-    """ดึงข้อมูลย้อนหลัง 24 ชม. เพื่อวิเคราะห์ Trend และตรวจสอบความผิดปกติ"""
+def verify_and_analyze(s_id, s_name):
+    """ตรวจสอบความผิดปกติและดึงข้อมูลย้อนหลังเพื่อวิเคราะห์ Trend"""
     url = f"http://air4thai.com/forweb/getHistory.php?stationID={s_id}&param=PM25&type=hr"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        res = requests.get(url, timeout=30).json()
+        res = requests.get(url, headers=headers, timeout=20).json()
         data = res.get('station', {}).get('data', [])
-        if not data:
-            return "ไม่พบข้อมูลประวัติย้อนหลัง", None
+        if not data: return "⚠️ ไม่พบข้อมูลย้อนหลัง", None
 
-        df = pd.DataFrame(data).tail(24) # วิเคราะห์ย้อนหลัง 24 ชั่วโมง
+        df = pd.DataFrame(data).tail(24)
         df['value'] = pd.to_numeric(df['value'], errors='coerce')
         
-        # --- ตรรกะตรวจสอบความถูกต้อง (Verification Logic) ---
-        # 1. เช็คการกระโดดของค่า (Spike)
-        max_diff = df['value'].diff().abs().max()
-        # 2. เช็คความต่อเนื่อง (ต้องแดงต่อเนื่องเกิน 2 ชม.)
-        is_steady_red = (df['value'].tail(2) > 75.0).all()
+        # เช็คอัตราการเปลี่ยนค่า (Rate of Change)
+        spike = df['value'].diff().abs().max()
+        # เช็คความต่อเนื่อง (Persistence)
+        steady_red = (df['value'].tail(3) > 75.0).all()
         
-        verify_msg = ""
-        if max_diff > 60:
-            verify_msg = f"⚠️ เฝ้าระวัง: พบค่าพุ่งสูงผิดปกติ ({max_diff} µg/m³ ใน 1 ชม.) อาจเป็นความผิดปกติของสถานี"
-        elif is_steady_red:
-            verify_msg = "✅ ยืนยัน: ค่าฝุ่นสูงต่อเนื่อง (เป็นแนวโน้มสถานการณ์จริง)"
-        else:
-            verify_msg = "🔍 ตรวจสอบ: ค่าเพิ่งพุ่งสูงขึ้น (เริ่มเข้าเกณฑ์วิกฤต)"
+        analysis = "✅ ยืนยัน: แดงต่อเนื่อง (สถานการณ์จริง)" if steady_red else "🔍 ตรวจสอบ: ค่าเพิ่งพุ่งสูงขึ้น"
+        if spike > 50: analysis = f"⚠️ เฝ้าระวัง: ค่าแกว่งผิดปกติ ({spike:.1f} µg/m³)"
 
-        # --- วาดกราฟ Trend ---
+        # วาดกราฟ Trend 24 ชม.
         plt.figure(figsize=(10, 5))
         plt.plot(df['datetime'].str[-5:], df['value'], marker='o', color='#c0392b', linewidth=2)
-        plt.axhline(y=75.0, color='black', linestyle='--', alpha=0.5)
-        plt.title(f"PM2.5 Trend (24h): {s_name}", fontsize=12)
-        plt.ylabel("µg/m³")
+        plt.axhline(y=75.0, color='black', linestyle='--', alpha=0.5, label='Red Threshold')
+        plt.title(f"PM2.5 Analysis 24h: {s_name}", fontsize=12)
         plt.grid(True, alpha=0.3)
-        plt.xticks(rotation=45)
         plt.tight_layout()
         
-        img_name = f"trend_{s_id}.png"
-        plt.savefig(img_name)
+        filename = f"trend_{s_id}.png"
+        plt.savefig(filename)
         plt.close()
-        return verify_msg, img_name
+        return analysis, filename
     except:
-        return "ไม่สามารถดึงข้อมูล Trend ได้", None
+        return "❌ ระบบประวัติขัดข้อง", None
 
-def verify_data_robust(s_id):
-    url = f"http://air4thai.com/forweb/getHistory.php?stationID={s_id}&param=PM25&type=hr"
-    try:
-        # เพิ่ม timeout และ headers เพื่อให้เหมือน Browser จริง
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=15) 
-        
-        if response.status_code != 200 or not response.text:
-            return "❌ ระบบฐานข้อมูลประวัติขัดข้องชั่วคราว", None
-            
-        res = response.json()
-        data = res.get('station', {}).get('data', [])
-        
-        if len(data) < 3:
-            return "⚠️ ข้อมูลประวัติไม่เพียงพอต่อการวิเคราะห์ Trend", None
-
-        # คำนวณ Trend ง่ายๆ
-        last_3_hours = [float(d['value']) for d in data[-3:]]
-        if last_3_hours[-1] > last_3_hours[0]:
-            trend_msg = "📈 แนวโน้ม: กำลังเพิ่มสูงขึ้น (ควรเฝ้าระวังพิเศษ)"
-        else:
-            trend_msg = "📉 แนวโน้ม: เริ่มลดลงหรือทรงตัว"
-            
-        return trend_msg, data
-    except:
-        return "❌ ไม่สามารถเชื่อมต่อฐานข้อมูลประวัติได้", None
-
-def send_line(s, verify_msg, img_file):
+def send_official_alert(s, analysis, img_file):
     url = "https://api.line.me/v2/bot/message/push"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_TOKEN}"
-    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     
-    text_msg = (f"🚨 แจ้งเตือน: พื้นที่สีแดง (อันตราย)\n"
-                f"📍 สถานี: {s['name']}\n"
-                f"🗺️ {s['area']}\n"
-                f"😷 AQI: {s['aqi']}\n"
-                f"💨 PM2.5: {s['pm25']} µg/m³\n"
-                f"⏰ ข้อมูล ณ เวลา: {s['time']}\n"
-                f"🧐 วิเคราะห์: {verify_msg}")
+    # คำนวณ AQI เองเพื่อให้ได้ข้อมูลที่ถูกต้องแม่นยำ
+    calc_aqi = calculate_thai_aqi(s['pm25'])
+    
+    text = (f"🚨 [รายงานเฝ้าระวังระดับวิกฤต]\n"
+            f"📍 สถานี: {s['name']}\n"
+            f"🗺️ {s['area']}\n"
+            f"😷 AQI: {calc_aqi} (สีแดง)\n"
+            f"💨 PM2.5: {s['pm25']} µg/m³\n"
+            f"⏰ ข้อมูลล่าสุด: {s['time']}\n"
+            f"📊 ผลวิเคราะห์: {analysis}\n"
+            f"📢 ข้อเสนอแนะ: เจ้าหน้าที่พื้นที่ควรลงตรวจสอบจุดความร้อน (Hotspot) รอบสถานี")
 
-    messages = [{"type": "text", "text": text_msg}]
-    
+    messages = [{"type": "text", "text": text}]
     if img_file:
         ts = int(datetime.datetime.now().timestamp())
         img_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{img_file}?t={ts}"
-        messages.append({
-            "type": "image",
-            "originalContentUrl": img_url,
-            "previewImageUrl": img_url
-        })
+        messages.append({"type": "image", "originalContentUrl": img_url, "previewImageUrl": img_url})
 
-    payload = {"to": USER_ID, "messages": messages}
-    res = requests.post(url, headers=headers, json=payload)
-    print(f"ผลการส่ง {s['name']}: {res.status_code}")
+    requests.post(url, headers=headers, json={"to": USER_ID, "messages": messages})
 
 def main():
-    red_stations = get_red_stations()
-    if not red_stations:
-        print("ไม่พบสถานีสีแดงในพื้นที่ที่กำหนด")
-        return
-
-    for s in red_stations:
-        verify_msg, img_file = verify_data_trend(s['id'], s['name'])
-        send_line(s, verify_msg, img_file)
+    api_url = "http://air4thai.com/forweb/getAQI_JSON.php"
+    res = requests.get(api_url).json()
+    
+    for s in res.get('stations', []):
+        pm25_val = s.get('AQILast', {}).get('PM25', {}).get('value')
+        if pm25_val and float(pm25_val) > 75.0 and s['stationID'] != "11t":
+            data = {
+                "id": s['stationID'], "name": s['nameTH'], "area": s['areaTH'],
+                "pm25": float(pm25_val), "time": s['AQILast']['PM25']['datetime']
+            }
+            analysis, img = verify_and_analyze(data['id'], data['name'])
+            send_official_alert(data, analysis, img)
 
 if __name__ == "__main__":
     main()
