@@ -14,7 +14,6 @@ GITHUB_REPO = os.getenv('GITHUB_REPOSITORY')
 
 LOG_FILE = "log.json"
 TIMEZONE = pytz.timezone('Asia/Bangkok')
-REPORT_HOURS = [7, 8, 9, 12, 15, 17]
 
 def load_log():
     if os.path.exists(LOG_FILE):
@@ -25,105 +24,62 @@ def load_log():
 
 def get_red_stations():
     url = "http://air4thai.com/forweb/getAQI_JSON.php"
+    print("--- 1. เริ่มดึงข้อมูลจาก Air4Thai ---")
     try:
         res = requests.get(url, timeout=30).json()
         red_list = []
+        count_all = 0
         for s in res.get('stations', []):
+            count_all += 1
             s_id = s.get('stationID')
             s_type = s.get('stationType', '').lower()
             try: pm25 = float(s['AQILast']['PM25']['value'])
             except: pm25 = 0
             
+            # เงื่อนไขทดสอบ: ปรับเป็น > 0 เพื่อให้เจอทุกสถานี
             if s_id != "11t" and s_type != "bkk" and pm25 > 0:
                 red_list.append({"id": s_id, "name": s['nameTH'], "area": s['areaTH'], "value": pm25})
+        
+        print(f"ตรวจพบทั้งหมด {count_all} สถานี")
+        print(f"ผ่านเกณฑ์คัดกรอง (ไม่ใช่ 11t/BKK และ > 0) จำนวน {len(red_list)} สถานี")
         return red_list
-    except:
+    except Exception as e:
+        print(f"Error ดึงข้อมูล: {e}")
         return []
 
-def analyze_and_plot(s_id, s_name):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    url = f"http://air4thai.com/forweb/getHistory.php?stationID={s_id}&param=PM25&type=hr"
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=30)
-        # ป้องกัน JSONDecodeError ถ้า API ส่งค่าว่างมา
-        if not response.text or response.status_code != 200:
-            return "เซิร์ฟเวอร์ Air4Thai ไม่ตอบสนอง ❓", "ดึงข้อมูลประวัติไม่ได้", None
-            
-        res = response.json()
-        if 'station' not in res or 'data' not in res['station']:
-            return "ไม่มีข้อมูลย้อนหลัง ❓", "ไม่พบประวัติ 48 ชม.", None
-
-        df = pd.DataFrame(res['station']['data']).tail(48)
-        df['value'] = pd.to_numeric(df['value'], errors='coerce')
-        
-        missing = df['value'].isna().sum()
-        max_diff = df['value'].diff().abs().max()
-        status, detail = "ปกติ ✅", "ข้อมูลมีความต่อเนื่อง"
-        
-        if missing > 12: status, detail = "ผิดปกติ ⚠️", "ข้อมูลขาดหายเกิน 25%"
-        elif max_diff > 50: status, detail = "ผิดปกติ ⚠️", f"พบค่า Spike {max_diff} µg/m³"
-
-        plt.figure(figsize=(10, 4))
-        plt.plot(df['datetime'], df['value'], marker='o', color='red', linewidth=2)
-        plt.axhline(y=75.1, color='gray', linestyle='--')
-        plt.title(f"48h Trend: {s_name} ({s_id})")
-        plt.grid(True, alpha=0.3)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        
-        filename = f"graph_{s_id}.png"
-        plt.savefig(filename)
-        plt.close()
-        return status, detail, filename
-    except Exception as e:
-        print(f"Plot Error: {e}")
-        return "ตรวจสอบไม่ได้ ❓", "เกิดข้อผิดพลาดในการประมวลผล", None
-
 def send_line(message, image_url):
+    print(f"--- 3. กำลังส่ง LINE ไปยัง ID: {USER_ID[:5]}... ---")
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    ts = datetime.datetime.now().timestamp()
-    full_image_url = f"{image_url}?t={ts}"
-    
     payload = {
         "to": USER_ID,
         "messages": [
             {"type": "text", "text": message},
-            {"type": "image", "originalContentUrl": full_image_url, "previewImageUrl": full_image_url}
+            {"type": "image", "originalContentUrl": image_url, "previewImageUrl": image_url}
         ]
     }
     response = requests.post(url, headers=headers, json=payload)
-    # เพิ่มบรรทัดนี้เพื่อดูว่า LINE ตอบกลับมาว่าอะไร
     print(f"LINE Response: {response.status_code} - {response.text}")
 
 def main():
     now = datetime.datetime.now(TIMEZONE)
-    today = now.strftime("%Y-%m-%d")
-    history = load_log()
+    print(f"เวลาปัจจุบัน: {now.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    if history.get('last_date') != today:
-        history = {"last_date": today, "alerted_ids": []}
-
     red_stations = get_red_stations()
+    
     if not red_stations:
-        with open(LOG_FILE, 'w') as f: json.dump(history, f)
+        print("❌ จบการทำงาน: ไม่พบสถานีที่ตรงตามเงื่อนไข")
         return
 
-    current_ids = [s['id'] for s in red_stations]
-    new_ids = [i for i in current_ids if i not in history.get('alerted_ids', [])]
+    print(f"--- 2. เริ่มขั้นตอนการส่งข้อความ (บังคับส่ง True) ---")
+    # บังคับส่งสถานีแรกที่เจอเพื่อทดสอบ
+    s = red_stations[0]
+    msg = f"🧪 ทดสอบระบบส่งข้อความ\n📍 {s['name']}\n💨 PM2.5: {s['value']}"
+    # ใช้รูปภาพตัวอย่างจากเน็ตเพื่อทดสอบว่า LINE ยอมรับรูปไหม
+    test_img = "https://www.air4thai.com/forweb/assets/img/logo_pcd_air4thai.png"
     
-    # เงื่อนไข: ส่งเมื่อถึงเวลาที่กำหนด หรือ มีสถานีใหม่แดงขึ้นมา
-    if True:
-        for s in red_stations:
-            status, detail, img_file = analyze_and_plot(s['id'], s['name'])
-            if img_file:
-                image_link = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{img_file}"
-                msg = f"🚨 แจ้งเตือนฝุ่นสีแดง\n📍 {s['name']}\n🗺️ {s['area']}\n💨 24ชม.: {s['value']} µg/m³\n🔍 ตรวจสอบ: {status}\n📝 {detail}"
-                send_line(msg, image_link)
-        
-        history['alerted_ids'] = list(set(history.get('alerted_ids', []) + current_ids))
-        with open(LOG_FILE, 'w') as f: json.dump(history, f)
+    send_line(msg, test_img)
+    print("✅ สิ้นสุดการทำงานหลัก")
 
 if __name__ == "__main__":
     main()
