@@ -34,7 +34,7 @@ def get_red_stations():
             try: pm25 = float(s['AQILast']['PM25']['value'])
             except: pm25 = 0
             
-            if s_id != "11t" and s_type != "bkk" and pm25 > 75.1:
+            if s_id != "11t" and s_type != "bkk" and pm25 > 30.1:
                 red_list.append({"id": s_id, "name": s['nameTH'], "area": s['areaTH'], "value": pm25})
         return red_list
     except:
