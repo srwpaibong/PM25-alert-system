@@ -33,14 +33,9 @@ jobs:
         run: |
           git config --global user.name 'AirQualityBot'
           git config --global user.email 'bot@github.com'
-          
-          # บันทึกไฟล์ที่เปลี่ยนเข้าคิว
           git add log.json
           git add *.png || true
-          
-          # ดึงข้อมูลล่าสุดแบบ "บังคับ" (Force Pull) เพื่อหลบความขัดแย้ง
-          git pull origin main --rebase --autostash
-          
-          # บันทึกและดันข้อมูลขึ้นไป
           git commit -m "Update graphs and log" || echo "No changes to commit"
+          # ดึงข้อมูลล่าสุดก่อนดันขึ้นเพื่อป้องกัน Conflict
+          git pull origin main --rebase --autostash
           git push origin main
