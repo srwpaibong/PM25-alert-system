@@ -13,11 +13,11 @@ GITHUB_REPO = os.getenv('GITHUB_REPOSITORY')
 TIMEZONE = pytz.timezone('Asia/Bangkok')
 LOG_FILE = "log.json"
 
-# กำหนดเวลาการรายงานหลัก (จะตรวจสอบทุกครั้งที่รัน แต่จะส่งสรุปตามรอบนี้)
+# รอบเวลาการรายงานหลัก
 REPORT_HOURS = [7, 9, 12, 17]
 
 def calculate_thai_aqi(pm25):
-    """คำนวณ AQI ตามเกณฑ์ คพ."""
+    """คำนวณ AQI ตามเกณฑ์วิชาการ คพ."""
     if pm25 <= 15.0: xi, xj, ii, ij = 0, 15.0, 0, 25
     elif pm25 <= 25.0: xi, xj, ii, ij = 15.1, 25.0, 26, 50
     elif pm25 <= 37.5: xi, xj, ii, ij = 25.1, 37.5, 51, 100
@@ -33,30 +33,34 @@ def load_log():
     return {"last_date": "", "alerted_ids": []}
 
 def verify_and_plot(s_id, s_name):
-    """วิเคราะห์ Trend และตรวจสอบความผิดปกติเพื่อช่วยเจ้าหน้าที่"""
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    """วิเคราะห์ Trend 24 ชม. เพื่อยืนยันความถูกต้องของข้อมูล"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     url = f"http://air4thai.com/forweb/getHistory.php?stationID={s_id}&param=PM25&type=hr"
     try:
-        response = requests.get(url, headers=headers, timeout=20)
+        # ลองดึงข้อมูล (Retry logic)
+        for _ in range(2):
+            response = requests.get(url, headers=headers, timeout=25)
+            if response.status_code == 200 and response.text: break
+        
         res = response.json()
         data = res.get('station', {}).get('data', [])
-        if not data: return "🔍 ไม่พบข้อมูลย้อนหลัง (ตรวจสอบรายพื้นที่)", None
+        if not data: return "🔍 ไม่พบประวัติย้อนหลัง (โปรดเช็คหน้าสถานี)", None
 
-        df = pd.DataFrame(data).tail(12)
+        df = pd.DataFrame(data).tail(24)
         df['value'] = pd.to_numeric(df['value'], errors='coerce')
         
-        # ตรวจสอบความถูกต้อง (Verification)
+        # ตรรกะยืนยันผล (Verification)
         spike = df['value'].diff().abs().max()
-        is_steady = (df['value'].tail(2) > 75.0).all()
+        is_steady = (df['value'].tail(3) > 75.0).all()
         
-        status = "✅ ยืนยัน: แดงต่อเนื่อง (ของจริง)" if is_steady else "📈 แนวโน้ม: เพิ่งเริ่มพุ่งสูง"
-        if spike > 60: status = f"⚠️ เฝ้าระวัง: ค่าแกว่งผิดปกติ ({spike:.1f})"
+        status = "✅ ยืนยัน: แดงต่อเนื่อง (สถานการณ์จริง)" if is_steady else "📈 แนวโน้ม: เพิ่งเริ่มพุ่งสูง"
+        if spike > 60: status = f"⚠️ เฝ้าระวัง: ค่าแกว่งผิดปกติ ({spike:.1f} µg/m³)"
 
-        # สร้างกราฟ
+        # วาดกราฟ Trend
         plt.figure(figsize=(10, 4))
-        plt.plot(df['datetime'].str[-5:], df['value'], marker='o', color='#c0392b')
+        plt.plot(df['datetime'].str[-5:], df['value'], marker='o', color='#c0392b', linewidth=2)
         plt.axhline(y=75.0, color='black', linestyle='--', alpha=0.5)
-        plt.title(f"Trend 12h: {s_name}")
+        plt.title(f"24h Trend Analysis: {s_name}")
         plt.grid(True, alpha=0.2)
         plt.tight_layout()
         
@@ -65,9 +69,9 @@ def verify_and_plot(s_id, s_name):
         plt.close()
         return status, filename
     except:
-        return "❌ ระบบประวัติขัดข้องชั่วคราว", None
+        return "❌ ระบบประวัติขัดข้อง (เซิร์ฟเวอร์ไม่ตอบสนอง)", None
 
-def send_alert(s, analysis, img_file):
+def send_official_alert(s, analysis, img_file):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     
@@ -93,7 +97,6 @@ def main():
     today = now.strftime("%Y-%m-%d")
     history = load_log()
     
-    # รีเซ็ต log ทุกวันใหม่
     if history.get('last_date') != today:
         history = {"last_date": today, "alerted_ids": []}
 
@@ -101,24 +104,35 @@ def main():
     current_red_stations = []
     
     for s in res.get('stations', []):
-        pm25_val = s.get('AQILast', {}).get('PM25', {}).get('value')
+        aqi_last = s.get('AQILast', {})
+        pm25_obj = aqi_last.get('PM25', {})
+        pm25_val = pm25_obj.get('value')
+        
         if pm25_val and float(pm25_val) > 75.0 and s.get('stationID') != "11t":
+            # แก้ปัญหาเวลา N/A (Safe Access)
+            time_val = pm25_obj.get('datetime')
+            if not time_val:
+                time_val = f"{aqi_last.get('date', '')} {aqi_last.get('time', '')}".strip()
+            if not time_val or time_val == "":
+                time_val = now.strftime("%Y-%m-%d %H:%M")
+
             current_red_stations.append({
                 "id": s['stationID'], "name": s['nameTH'], "area": s['areaTH'],
-                "pm25": float(pm25_val), "time": s['AQILast']['PM25'].get('datetime', 'N/A')
+                "pm25": float(pm25_val), "time": time_val
             })
 
-    # ตรวจสอบเงื่อนไขการส่ง: เป็นเวลาที่กำหนด หรือ มีสถานีแดงใหม่ที่ยังไม่เคยแจ้งในวันนี้
+    # เงื่อนไขการส่ง: เป็นเวลาหลัก หรือ มีสถานีแดงใหม่เพิ่มขึ้นมา
     new_stations = [s for s in current_red_stations if s['id'] not in history['alerted_ids']]
-    is_scheduled = now.hour in REPORT_HOURS and now.minute < 15 # เผื่อเวลารัน 15 นาที
+    is_scheduled = now.hour in REPORT_HOURS and now.minute < 30 # รันในช่วง 30 นาทีแรกของชั่วโมง
 
     if new_stations or (is_scheduled and current_red_stations):
-        # กรณีพบสถานีใหม่: แจ้งเฉพาะสถานีใหม่ทันที
-        # กรณีถึงรอบเวลา: แจ้งสถานีสีแดงที่ยังไม่เคยแจ้งในรอบก่อนๆ ของวันนี้
-        for s in new_stations:
-            analysis, img = verify_and_plot(s['id'], s['name'])
-            send_alert(s, analysis, img)
-            history['alerted_ids'].append(s['id'])
+        for s in current_red_stations:
+            # ส่งเฉพาะสถานีที่ยังไม่เคยแจ้ง "หรือ" ส่งทุกสถานีถ้าถึงรอบเวลาหลัก
+            if s['id'] in new_stations or is_scheduled:
+                analysis, img = verify_and_plot(s['id'], s['name'])
+                send_official_alert(s, analysis, img)
+                if s['id'] not in history['alerted_ids']:
+                    history['alerted_ids'].append(s['id'])
             
         with open(LOG_FILE, 'w') as f:
             json.dump(history, f)
