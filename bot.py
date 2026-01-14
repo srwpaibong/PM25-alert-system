@@ -13,17 +13,16 @@ GITHUB_REPO = os.getenv('GITHUB_REPOSITORY')
 TIMEZONE = pytz.timezone('Asia/Bangkok')
 LOG_FILE = "log.json"
 
-# รอบเวลาการรายงานหลัก
-REPORT_HOURS = [7, 9, 12, 17]
-
 def calculate_thai_aqi(pm25):
-    """คำนวณ AQI ตามเกณฑ์วิชาการ คพ."""
+    """คำนวณ AQI ตามสูตรเส้นตรงและเกณฑ์ คพ."""
     if pm25 <= 15.0: xi, xj, ii, ij = 0, 15.0, 0, 25
     elif pm25 <= 25.0: xi, xj, ii, ij = 15.1, 25.0, 26, 50
     elif pm25 <= 37.5: xi, xj, ii, ij = 25.1, 37.5, 51, 100
     elif pm25 <= 75.0: xi, xj, ii, ij = 37.6, 75.0, 101, 200
     else: xi, xj, ii, ij = 75.1, 500.0, 201, 500
-    return int(round(((ij - ii) / (xj - xi)) * (pm25 - xi) + ii))
+    
+    aqi = ((ij - ii) / (xj - xi)) * (pm25 - xi) + ii
+    return int(round(aqi))
 
 def load_log():
     if os.path.exists(LOG_FILE):
@@ -33,30 +32,25 @@ def load_log():
     return {"last_date": "", "alerted_ids": []}
 
 def verify_and_plot(s_id, s_name):
-    """วิเคราะห์ Trend 24 ชม. เพื่อยืนยันความถูกต้องของข้อมูล"""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    """ดึงข้อมูล 24 ชม. เพื่อยืนยันความถูกต้องและวิเคราะห์แนวโน้ม"""
+    headers = {'User-Agent': 'Mozilla/5.0'}
     url = f"http://air4thai.com/forweb/getHistory.php?stationID={s_id}&param=PM25&type=hr"
     try:
-        # ลองดึงข้อมูล (Retry logic)
-        for _ in range(2):
-            response = requests.get(url, headers=headers, timeout=25)
-            if response.status_code == 200 and response.text: break
-        
+        response = requests.get(url, headers=headers, timeout=25)
         res = response.json()
         data = res.get('station', {}).get('data', [])
-        if not data: return "🔍 ไม่พบประวัติย้อนหลัง (โปรดเช็คหน้าสถานี)", None
+        if not data: return "🔍 ไม่พบประวัติย้อนหลัง", None
 
         df = pd.DataFrame(data).tail(24)
         df['value'] = pd.to_numeric(df['value'], errors='coerce')
         
-        # ตรรกะยืนยันผล (Verification)
+        # วิเคราะห์ความผิดปกติ (Anomaly Detection)
         spike = df['value'].diff().abs().max()
-        is_steady = (df['value'].tail(3) > 75.0).all()
+        steady_red = (df['value'].tail(2) > 75.0).all()
         
-        status = "✅ ยืนยัน: แดงต่อเนื่อง (สถานการณ์จริง)" if is_steady else "📈 แนวโน้ม: เพิ่งเริ่มพุ่งสูง"
-        if spike > 60: status = f"⚠️ เฝ้าระวัง: ค่าแกว่งผิดปกติ ({spike:.1f} µg/m³)"
+        analysis = "✅ ยืนยัน: แดงต่อเนื่อง (สถานการณ์จริง)" if steady_red else "📈 แนวโน้ม: เพิ่งเริ่มพุ่งสูง"
+        if spike > 60: analysis = f"⚠️ เฝ้าระวัง: ค่าแกว่งผิดปกติ ({spike:.1f} µg/m³)"
 
-        # วาดกราฟ Trend
         plt.figure(figsize=(10, 4))
         plt.plot(df['datetime'].str[-5:], df['value'], marker='o', color='#c0392b', linewidth=2)
         plt.axhline(y=75.0, color='black', linestyle='--', alpha=0.5)
@@ -67,11 +61,11 @@ def verify_and_plot(s_id, s_name):
         filename = f"trend_{s_id}.png"
         plt.savefig(filename)
         plt.close()
-        return status, filename
+        return analysis, filename
     except:
-        return "❌ ระบบประวัติขัดข้อง (เซิร์ฟเวอร์ไม่ตอบสนอง)", None
+        return "❌ ระบบประวัติขัดข้องชั่วคราว", None
 
-def send_official_alert(s, analysis, img_file):
+def send_alert(s, analysis, img_file):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     
@@ -79,7 +73,7 @@ def send_official_alert(s, analysis, img_file):
     msg = (f"🚨 [รายงานเฝ้าระวังวิกฤตฝุ่นละออง]\n"
            f"📍 สถานี: {s['name']}\n"
            f"🗺️ {s['area']}\n"
-           f"😷 AQI (คำนวณ): {aqi} (สีแดง-อันตราย)\n"
+           f"😷 AQI (คำนวณ): {aqi} (สีแดง)\n"
            f"💨 PM2.5: {s['pm25']} µg/m³\n"
            f"⏰ ข้อมูล ณ: {s['time']}\n"
            f"📊 ผลวิเคราะห์ Trend: {analysis}")
@@ -97,45 +91,38 @@ def main():
     today = now.strftime("%Y-%m-%d")
     history = load_log()
     
+    # รีเซ็ต Log เมื่อขึ้นวันใหม่
     if history.get('last_date') != today:
         history = {"last_date": today, "alerted_ids": []}
 
-    res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php").json()
-    current_red_stations = []
+    api_url = "http://air4thai.com/forweb/getAQI_JSON.php"
+    res = requests.get(api_url).json()
     
     for s in res.get('stations', []):
-        aqi_last = s.get('AQILast', {})
-        pm25_obj = aqi_last.get('PM25', {})
-        pm25_val = pm25_obj.get('value')
+        s_id = s.get('stationID')
+        pm25_val = s.get('AQILast', {}).get('PM25', {}).get('value')
         
-        if pm25_val and float(pm25_val) > 75.0 and s.get('stationID') != "11t":
-            # แก้ปัญหาเวลา N/A (Safe Access)
-            time_val = pm25_obj.get('datetime')
-            if not time_val:
-                time_val = f"{aqi_last.get('date', '')} {aqi_last.get('time', '')}".strip()
-            if not time_val or time_val == "":
-                time_val = now.strftime("%Y-%m-%d %H:%M")
+        # เงื่อนไข: สีแดง (>75.0), ยกเว้นสถานี 11t, และยังไม่ได้แจ้งในวันนี้
+        if pm25_val and float(pm25_val) > 75.0 and s_id != "11t":
+            if s_id not in history['alerted_ids']:
+                # จัดการเรื่องเวลาแบบปลอดภัย
+                time_val = s.get('AQILast', {}).get('PM25', {}).get('datetime')
+                if not time_val:
+                    time_val = now.strftime("%Y-%m-%d %H:%M")
 
-            current_red_stations.append({
-                "id": s['stationID'], "name": s['nameTH'], "area": s['areaTH'],
-                "pm25": float(pm25_val), "time": time_val
-            })
-
-    # เงื่อนไขการส่ง: เป็นเวลาหลัก หรือ มีสถานีแดงใหม่เพิ่มขึ้นมา
-    new_stations = [s for s in current_red_stations if s['id'] not in history['alerted_ids']]
-    is_scheduled = now.hour in REPORT_HOURS and now.minute < 30 # รันในช่วง 30 นาทีแรกของชั่วโมง
-
-    if new_stations or (is_scheduled and current_red_stations):
-        for s in current_red_stations:
-            # ส่งเฉพาะสถานีที่ยังไม่เคยแจ้ง "หรือ" ส่งทุกสถานีถ้าถึงรอบเวลาหลัก
-            if s['id'] in new_stations or is_scheduled:
-                analysis, img = verify_and_plot(s['id'], s['name'])
-                send_official_alert(s, analysis, img)
-                if s['id'] not in history['alerted_ids']:
-                    history['alerted_ids'].append(s['id'])
+                data = {
+                    "id": s_id, "name": s['nameTH'], "area": s['areaTH'],
+                    "pm25": float(pm25_val), "time": time_val
+                }
+                
+                analysis, img = verify_and_plot(data['id'], data['name'])
+                send_alert(data, analysis, img)
+                
+                # บันทึกสถานีที่แจ้งไปแล้ว
+                history['alerted_ids'].append(s_id)
             
-        with open(LOG_FILE, 'w') as f:
-            json.dump(history, f)
+    with open(LOG_FILE, 'w') as f:
+        json.dump(history, f)
 
 if __name__ == "__main__":
     main()
