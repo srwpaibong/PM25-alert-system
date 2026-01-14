@@ -34,7 +34,6 @@ jobs:
           git config --global user.name 'AirQualityBot'
           git config --global user.email 'bot@github.com'
           git add log.json
-          git add *.png || true
           git commit -m "Update graphs and log" || echo "No changes"
           git pull origin main --rebase --autostash
           git push origin main
