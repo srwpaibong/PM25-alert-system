@@ -12,7 +12,6 @@ TIMEZONE = pytz.timezone('Asia/Bangkok')
 LOG_FILE = "log.json"
 
 def calculate_thai_aqi(pm25):
-    """คำนวณ AQI ตามเกณฑ์ คพ."""
     if pm25 <= 15.0: xi, xj, ii, ij = 0, 15.0, 0, 25
     elif pm25 <= 25.0: xi, xj, ii, ij = 15.1, 25.0, 26, 50
     elif pm25 <= 37.5: xi, xj, ii, ij = 25.1, 37.5, 51, 100
@@ -21,57 +20,32 @@ def calculate_thai_aqi(pm25):
     return int(round(((ij - ii) / (xj - xi)) * (pm25 - xi) + ii))
 
 def analyze_station_integrity(s_id):
-    """วิเคราะห์ข้อมูลย้อนหลัง 48 ชม. ด้วย API ใหม่ที่คุณให้มา"""
     now = datetime.datetime.now(TIMEZONE)
     edate = now.strftime("%Y-%m-%d")
     sdate = (now - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
-    
-    # URL สำหรับดึงข้อมูลย้อนหลังตามที่คุณระบุ
     url = f"http://air4thai.com/forweb/getHistoryData.php?stationID={s_id}&param=PM25&type=hr&sdate={sdate}&edate={edate}&stime=00&etime=23"
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
     try:
-        res = requests.get(url, headers=headers, timeout=25).json()
+        res = requests.get(url, headers=headers, timeout=20).json()
         data = res.get('stations', [{}])[0].get('data', [])
         if not data: return "⚠️ ไม่พบประวัติ", "N/A", "ไม่ทราบเวลา"
-
         df = pd.DataFrame(data)
-        # ปรับชื่อคอลัมน์ตามโครงสร้าง JSON ใหม่
         df.rename(columns={'DATETIMEDATA': 'datetime', 'PM25': 'value'}, inplace=True)
         df['value'] = pd.to_numeric(df['value'], errors='coerce')
-        
-        # 1. วิเคราะห์ Min-Max 48 ชม.
         v_min, v_max = df['value'].min(), df['value'].max()
-        
-        # 2. ตรวจสอบความผิดปกติ (Integrity Checks)
         issues = []
         if df['value'].diff().abs().max() > 50: issues.append("Spike")
-        # เช็ค Flatline (ค่านิ่งต่อเนื่อง 4 ชม. ขึ้นไป)
         if (df['value'].rolling(window=4).std() == 0).any(): issues.append("Flatline")
-        if (df['value'] < 0).any(): issues.append("ค่าติดลบ")
+        if (df['value'] < 0).any(): issues.append("ติดลบ")
         if df['value'].isnull().sum() > 3: issues.append("ข้อมูลหาย")
-        
-        integrity_status = "✅ ปกติ" if not issues else f"⚠️ {', '.join(issues)}"
-        
-        # 3. หาเวลาที่เริ่มแดง (Red Since)
-        red_start_time = "แดงต่อเนื่องเกิน 48 ชม."
-        found_non_red = False
-        # ไล่จากข้อมูลล่าสุดย้อนกลับไป
+        status = "✅ ปกติ" if not issues else f"⚠️ {', '.join(issues)}"
+        red_start = "แดงต่อเนื่อง > 48 ชม."
         for i in range(len(df)-1, -1, -1):
             if df.iloc[i]['value'] <= 75.0:
-                if i < len(df)-1:
-                    red_start_time = df.iloc[i+1]['datetime']
-                else:
-                    red_start_time = "เพิ่งเริ่มแดงในชั่วโมงนี้"
-                found_non_red = True
+                red_start = df.iloc[i+1]['datetime'] if i < len(df)-1 else "เพิ่งเริ่มแดง"
                 break
-        
-        if not found_non_red and len(df) > 0:
-            red_start_time = df.iloc[0]['datetime']
-
-        return integrity_status, f"{v_min}-{v_max}", red_start_time
-    except:
-        return "❌ ระบบขัดข้อง", "N/A", "N/A"
+        return status, f"{v_min}-{v_max}", red_start
+    except: return "❌ ระบบขัดข้อง", "N/A", "N/A"
 
 def load_log():
     if os.path.exists(LOG_FILE):
@@ -84,64 +58,59 @@ def main():
     now = datetime.datetime.now(TIMEZONE)
     today = now.strftime("%Y-%m-%d")
     history = load_log()
-    
-    if history.get('last_date') != today:
-        history = {"last_date": today, "alerted_ids": {}}
+    if history.get('last_date') != today: history = {"last_date": today, "alerted_ids": {}}
 
-    # ดึงข้อมูลสถานะปัจจุบันทุกสถานี
     res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php").json()
-    all_red = []
-    
+    all_stations = []
     for s in res.get('stations', []):
         s_id = s.get('stationID')
         val = s.get('AQILast', {}).get('PM25', {}).get('value')
-        
-        # กรองสีแดง (> 75.0) และไม่ใช่ 11t
         if val and float(val) > 75.0 and s_id != "11t":
             integrity, v_range, red_since = analyze_station_integrity(s_id)
-            all_red.append({
-                "id": s_id, "name": s['nameTH'], "area": s['areaTH'],
+            province = s['areaTH'].split(',')[-1].strip()
+            all_stations.append({
+                "id": s_id, "name": s['nameTH'], "area": s['areaTH'], "province": province,
                 "pm25": float(val), "aqi": calculate_thai_aqi(float(val)),
-                "time": s['AQILast']['PM25'].get('datetime', now.strftime("%H:%M")),
+                "time": s['AQILast']['PM25'].get('datetime', now.strftime("%Y-%m-%d %H:%M")),
                 "integrity": integrity, "range": v_range, "red_since": red_since
             })
 
-    # เรียงลำดับตามสถานีที่แดงก่อน
-    all_red.sort(key=lambda x: x['red_since'])
+    # แยกสถานีใหม่ และสถานีเดิม
+    new_list = [s for s in all_stations if s['id'] not in history['alerted_ids']]
+    existing_list = [s for s in all_stations if s['id'] in history['alerted_ids']]
+    
+    # เรียงลำดับสถานีใหม่: ล่าสุดขึ้นก่อน
+    new_list.sort(key=lambda x: x['time'], reverse=True)
 
-    new_stations = [s for s in all_red if s['id'] not in history['alerted_ids']]
+    if new_list:
+        msg = f"📊 *[สรุปรายงานวิกฤต PM2.5]*\n⏰ ตรวจสอบ: {now.strftime('%H:%M น.')}\n🔴 ทั้งหมด: {len(all_stations)} | 🆕 ใหม่: {len(new_list)}\n"
+        
+        def format_group(title, stations):
+            if not stations: return ""
+            section = f"\n{title}\n----------------------------\n"
+            # จัดกลุ่มตามจังหวัด
+            provinces = sorted(list(set([s['province'] for s in stations])))
+            idx = 1
+            for p in provinces:
+                section += f"📍 *จังหวัด {p}*\n"
+                for s in [st for st in stations if st['province'] == p]:
+                    section += (f"{idx}. *{s['name']}* ({s['id']})\n"
+                                f"😷 *AQI:* {s['aqi']} | *PM2.5:* {s['pm25']}\n"
+                                f"📈 *48ชม:* {s['range']} | 🔍 *สถานะ:* {s['integrity']}\n"
+                                f"🚩 *เริ่มแดงตั้งแต่:* {s['red_since']}\n"
+                                f"🕒 ข้อมูล ณ: {s['time']}\n---\n")
+                    history['alerted_ids'][s['id']] = s['time']
+                    idx += 1
+            return section
 
-    # ส่งรายงานเฉพาะเมื่อพบสถานีแดงใหม่
-    if new_stations:
-        header = (f"📊 *[สรุปรายงานวิกฤต PM2.5]*\n"
-                  f"⏰ ตรวจสอบล่าสุด: {now.strftime('%H:%M น.')}\n"
-                  f"🔴 รวมระดับสีแดง: {len(all_red)} สถานี\n"
-                  f"🆕 พบสถานีแดงใหม่รอบนี้: {len(new_stations)} สถานี\n"
-                  f"----------------------------")
-        
-        details = []
-        for i, s in enumerate(all_red, 1):
-            history['alerted_ids'][s['id']] = s['time']
-            item = (f"{i}. *{s['name']}* ({s['id']})\n"
-                    f"📍 {s['area']}\n"
-                    f"😷 *AQI:* {s['aqi']} | *PM2.5:* {s['pm25']} µg/m³\n"
-                    f"📈 *48ชม:* {s['range']} | 🔍 *สถานะ:* {s['integrity']}\n"
-                    f"🚩 *เริ่มแดงตั้งแต่:* {s['red_since']}\n"
-                    f"🕒 ข้อมูล ณ: {s['time']}")
-            details.append(item)
-        
-        full_message = header + "\n" + "\n---\n".join(details)
-        
-        # ส่ง LINE
-        url = "https://api.line.me/v2/bot/message/push"
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-        payload = {"to": USER_ID, "messages": [{"type": "text", "text": full_message}]}
-        requests.post(url, headers=headers, json=payload)
-        
-        with open(LOG_FILE, 'w') as f:
-            json.dump(history, f)
-            
-    print(f"สแกนเสร็จสิ้น: พบ {len(all_red)} สถานีแดง (แจ้งใหม่ {len(new_stations)})")
+        full_msg = msg + format_group("🆕 *สถานีที่ตรวจพบใหม่ในรอบนี้*", new_list)
+        if existing_list:
+            full_msg += format_group("🔴 *สถานีสีแดงที่ยังวิกฤตต่อเนื่อง*", existing_list)
+
+        requests.post("https://api.line.me/v2/bot/message/push", 
+                      headers={"Content-Type":"application/json","Authorization":f"Bearer {LINE_TOKEN}"},
+                      json={"to":USER_ID,"messages":[{"type":"text","text":full_msg}]})
+        with open(LOG_FILE, 'w') as f: json.dump(history, f)
 
 if __name__ == "__main__":
     main()
