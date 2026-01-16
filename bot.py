@@ -14,34 +14,28 @@ TIMEZONE = pytz.timezone('Asia/Bangkok')
 LOG_FILE = "log.json"
 
 # --- Mapping: จังหวัด -> รหัสสถานีอุตุฯ (TMD AWS ID) ---
-# รวบรวมจากข้อมูล API ที่คุณให้มา + สถานีหลักรายจังหวัด
 TMD_PROVINCE_MAP = {
     # ภาคเหนือ
     "เชียงราย": 1005, "เชียงใหม่": 1023, "น่าน": 1011, "พะเยา": 1017,
     "แพร่": 1014, "แม่ฮ่องสอน": 3, "ลำปาง": 16, "ลำพูน": 10,
     "อุตรดิตถ์": 1035, "สุโขทัย": 1010, "พิษณุโลก": 38, "พิจิตร": 1033,
     "เพชรบูรณ์": 1040, "ตาก": 17, "กำแพงเพชร": 1031,
-    
     # ภาคตะวันออกเฉียงเหนือ
     "หนองคาย": 1034, "เลย": 48, "อุดรธานี": 35, "นครพนม": 46,
     "สกลนคร": 1046, "หนองบัวลำภู": 79, "ขอนแก่น": 37, "กาฬสินธุ์": 1051,
     "มุกดาหาร": 43, "ชัยภูมิ": 1050, "มหาสารคาม": 40, "ร้อยเอ็ด": 1052,
     "ยโสธร": 1053, "อำนาจเจริญ": 1054, "อุบลราชธานี": 73, "ศรีสะเกษ": 70,
     "สุรินทร์": 69, "บุรีรัมย์": 67, "นครราชสีมา": 1055,
-    
     # ภาคกลาง
     "นครสวรรค์": 27, "อุทัยธานี": 1032, "ชัยนาท": 25, "ลพบุรี": 1038,
     "สิงห์บุรี": 1038, "อ่างทอง": 1036, "สระบุรี": 1037, "พระนครศรีอยุธยา": 1036,
     "อยุธยา": 1036, "สุพรรณบุรี": 1030, "นครปฐม": 28, "ปทุมธานี": 1003,
     "นนทบุรี": 1003, "สมุทรปราการ": 1001, "กรุงเทพฯ": 1001, "กรุงเทพมหานคร": 1001,
-    
     # ภาคตะวันออก
     "นครนายก": 1003, "ปราจีนบุรี": 1069, "สระแก้ว": 1066, "ฉะเชิงเทรา": 34,
     "ชลบุรี": 44, "ระยอง": 58, "จันทบุรี": 41, "ตราด": 39,
-    
     # ภาคตะวันตก
     "กาญจนบุรี": 1062, "ราชบุรี": 32, "เพชรบุรี": 1072, "ประจวบคีรีขันธ์": 1073,
-    
     # ภาคใต้
     "ชุมพร": 60, "ระนอง": 59, "สุราษฎร์ธานี": 91, "พังงา": 61,
     "ภูเก็ต": 68, "กระบี่": 1087, "นครศรีธรรมราช": 90, "ตรัง": 64,
@@ -84,7 +78,7 @@ def is_upwind(station_lat, station_lon, hotspot_lat, hotspot_lon, wind_deg):
     target_bearing = calculate_bearing(station_lat, station_lon, hotspot_lat, hotspot_lon)
     diff = abs(target_bearing - wind_deg)
     diff = min(diff, 360 - diff)
-    return diff <= 60 # มุมกว้าง +/- 60 องศา
+    return diff <= 60
 
 def deg_to_compass_thai(num):
     if num is None: return "ไม่ระบุ"
@@ -102,52 +96,50 @@ def get_weather_data(s_payload, lat, lon):
         "wind_spd": None, "wind_dir": None, "wind_deg": None
     }
     
-    # 1. Try Air4Thai History
+    # 1. Try Air4Thai
     try:
         url = f"http://air4thai.com/forweb/getHistoryData.php?stationID={s_payload['stationID']}&param=PM25,WS,WD,TEMP,RH&type=hr&limit=1"
         h_res = requests.get(url, timeout=5).json()
-        latest = h_res['stations'][0]['data'][-1]
-        
-        if latest.get('TEMP') and float(latest['TEMP']) > -90: weather['temp'] = float(latest['TEMP'])
-        if latest.get('RH'): weather['hum'] = float(latest['RH'])
-        if latest.get('WS'): weather['wind_spd'] = float(latest['WS']) * 3.6 # m/s to km/h
-        if latest.get('WD'): 
-            weather['wind_deg'] = float(latest['WD'])
-            weather['wind_dir'] = deg_to_compass_thai(weather['wind_deg'])
-    except: pass
+        if 'stations' in h_res and len(h_res['stations']) > 0:
+            latest = h_res['stations'][0]['data'][-1]
+            if latest.get('TEMP') and float(latest['TEMP']) > -90: weather['temp'] = float(latest['TEMP'])
+            if latest.get('RH'): weather['hum'] = float(latest['RH'])
+            if latest.get('WS'): weather['wind_spd'] = float(latest['WS']) * 3.6
+            if latest.get('WD'): 
+                weather['wind_deg'] = float(latest['WD'])
+                weather['wind_dir'] = deg_to_compass_thai(weather['wind_deg'])
+    except:
+        pass
 
-    # 2. TMD Fallback (ถ้าไม่มีลมจาก คพ.)
+    # 2. TMD Fallback
     if weather['wind_deg'] is None:
-        # ตัดคำว่า 'จ.' ออก และหาชื่อจังหวัด
-        full_province = s_payload['areaTH'].split(',')[-1].strip()
-        province_key = full_province.replace('จ.', '').strip()
-        
-        tmd_id = TMD_PROVINCE_MAP.get(province_key)
-        
-        if tmd_id:
-            url_tmd = f"http://122.155.135.49/api/home/site/{tmd_id}"
-            try:
+        try:
+            full_province = s_payload['areaTH'].split(',')[-1].strip()
+            province_key = full_province.replace('จ.', '').strip()
+            tmd_id = TMD_PROVINCE_MAP.get(province_key)
+            
+            if tmd_id:
+                url_tmd = f"http://122.155.135.49/api/home/site/{tmd_id}"
                 t_res = requests.get(url_tmd, timeout=10).json()
-                item = t_res['data']['items'][0]
-                
-                raw_dir = item.get('winddirsign', 'N/A')
-                thai_dir = WIND_DIR_MAP.get(raw_dir.upper(), raw_dir)
-                
-                weather['source'] = f"สถานีกรมอุตุฯ จ.{province_key}"
-                weather['temp'] = item.get('temp')
-                weather['hum'] = item.get('humidity')
-                
-                # แปลงหน่วยความเร็วลม (ถ้าค่าดูน้อยผิดปกติเหมือน m/s ให้คูณ 3.6)
-                w_speed = float(item.get('windspeed', 0))
-                if w_speed < 20: w_speed *= 3.6 
-                weather['wind_spd'] = w_speed
-                
-                weather['wind_dir'] = thai_dir
-                weather['wind_deg'] = float(item.get('winddir', 0))
-            except:
-                weather['source'] = f"สถานีกรมอุตุฯ (เชื่อมต่อไม่ได้)"
-        else:
-            weather['source'] = "ไม่พบสถานีตรวจวัดลมใกล้เคียง"
+                if 'data' in t_res and 'items' in t_res['data']:
+                    item = t_res['data']['items'][0]
+                    raw_dir = item.get('winddirsign', 'N/A')
+                    thai_dir = WIND_DIR_MAP.get(raw_dir.upper(), raw_dir)
+                    
+                    weather['source'] = f"สถานีกรมอุตุฯ จ.{province_key}"
+                    weather['temp'] = item.get('temp')
+                    weather['hum'] = item.get('humidity')
+                    
+                    w_speed = float(item.get('windspeed', 0))
+                    if w_speed < 20: w_speed *= 3.6 
+                    weather['wind_spd'] = w_speed
+                    
+                    weather['wind_dir'] = thai_dir
+                    weather['wind_deg'] = float(item.get('winddir', 0))
+            else:
+                weather['source'] = "ไม่พบสถานีตรวจวัดลมใกล้เคียง"
+        except:
+            weather['source'] = "สถานีกรมอุตุฯ (เชื่อมต่อไม่ได้)"
 
     return weather
 
@@ -158,7 +150,7 @@ def get_hotspot_data(lat, lon, wind_deg):
     summary = {
         "upwind_total": 0, "nearby_total": 0,
         "landuse": {}, "nearest": 9999, "nearest_dir": "ไม่พบ",
-        "scope_msg": ""
+        "scope_msg": "", "report_count": 0
     }
     
     try:
@@ -174,3 +166,165 @@ def get_hotspot_data(lat, lon, wind_deg):
                 summary['nearby_total'] += 1
                 
                 if is_upwind(lat, lon, h_lat, h_lon, wind_deg):
+                    summary['upwind_total'] += 1
+                    lu = props.get('lu_hp_name', 'ไม่ระบุ')
+                    summary['landuse'][lu] = summary['landuse'].get(lu, 0) + 1
+                
+                if dist < summary['nearest']:
+                    summary['nearest'] = dist
+                    b = calculate_bearing(lat, lon, h_lat, h_lon)
+                    summary['nearest_dir'] = deg_to_compass_thai(b)
+
+        if summary['upwind_total'] > 0:
+            summary['scope_msg'] = "(รัศมี 50 กม. จากทิศที่ลมพัดมา)"
+            summary['report_count'] = summary['upwind_total']
+        elif summary['nearby_total'] > 0:
+            summary['scope_msg'] = "(รัศมี 50 กม. รอบทิศทาง - ไม่ตรงทิศลม)"
+            summary['report_count'] = summary['nearby_total']
+        else:
+            summary['scope_msg'] = "(รัศมี 50 กม. รอบทิศทาง)"
+            summary['report_count'] = 0
+
+    except Exception as e:
+        print(f"GISTDA Error: {e}")
+        return None
+
+    return summary
+
+def analyze_situation(pm25_now, pm25_24, wind_spd, hotspot_data, integrity, wind_dir_thai):
+    analysis = ""
+    hotspot_count = hotspot_data['report_count'] if hotspot_data else 0
+    
+    if "Spike" in integrity: return "⚠️ ข้อมูลมีความผิดปกติ (ค่าพุ่งสูงเฉียบพลัน Spike) ควรตรวจสอบเซนเซอร์"
+    if "ขาดหาย" in integrity: return "⚠️ ข้อมูลไม่ครบถ้วน (Missing Data)"
+
+    factors = []
+    if wind_spd is not None and wind_spd < 5: factors.append("สภาพอากาศปิด/ลมนิ่ง")
+    if hotspot_count > 5: factors.append("พบจุดความร้อนสะสมจำนวนมาก")
+    
+    if pm25_now > 75:
+        if hotspot_count > 0 and "ลมนิ่ง" in str(factors):
+            analysis = "✅ **สถานการณ์จริง:** ค่าฝุ่นสูงวิกฤตสอดคล้องกับสภาพอากาศปิดและมีจุดความร้อนในพื้นที่"
+        elif hotspot_data and hotspot_data['upwind_total'] > 0:
+            analysis = f"✅ **สถานการณ์จริง:** ลมพัดพาฝุ่นจากการเผาไหม้ทาง{wind_dir_thai}เข้ามาสะสม"
+        elif "ลมนิ่ง" in str(factors):
+            analysis = "⚠️ **เฝ้าระวัง:** ไม่พบจุดเผาใกล้เคียง แต่ค่าฝุ่นสูงจากสภาพอากาศปิด (อาจเป็นฝุ่นสะสม)"
+        else:
+            analysis = "⚠️ **เฝ้าระวัง:** ค่าฝุ่นสูงโดยไม่พบปัจจัยแวดล้อมชัดเจน อาจเกิดจากแหล่งกำเนิดเฉพาะจุด"
+            
+    return analysis
+
+def load_log():
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r') as f:
+            try: return json.load(f)
+            except: return {"last_date": "", "alerted_ids": {}}
+    return {"last_date": "", "alerted_ids": {}}
+
+def main():
+    now = datetime.datetime.now(TIMEZONE)
+    history = load_log()
+    today_str = now.strftime("%Y-%m-%d")
+    if history.get('last_date') != today_str:
+        history = {"last_date": today_str, "alerted_ids": {}}
+
+    try:
+        res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php", timeout=30).json()
+    except:
+        print("API Error")
+        return
+
+    red_stations = []
+
+    for s in res.get('stations', []):
+        val = s.get('AQILast', {}).get('PM25', {}).get('value')
+        s_id = s['stationID']
+        
+        if val and float(val) > 75.0 and s_id != "11t":
+            lat, lon = float(s['lat']), float(s['long'])
+            
+            # 1. History
+            edate = now.strftime("%Y-%m-%d")
+            sdate = (now - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
+            hist_url = f"http://air4thai.com/forweb/getHistoryData.php?stationID={s_id}&param=PM25&type=hr&sdate={sdate}&edate={edate}&stime=00&etime=23"
+            try:
+                h_res = requests.get(hist_url, timeout=10).json()
+                data = h_res['stations'][0]['data']
+                df = pd.DataFrame(data)
+                df['PM25'] = pd.to_numeric(df['PM25'], errors='coerce')
+                
+                pm25_now = float(val)
+                pm25_24h = df.tail(24)['PM25'].mean()
+                v_min, v_max = df['PM25'].min(), df['PM25'].max()
+                
+                issues = []
+                if df['PM25'].diff().abs().max() > 50: issues.append("Spike")
+                if (df['PM25'].rolling(4).std() == 0).any(): issues.append("Flatline")
+                if df['PM25'].isnull().sum() > 4: issues.append("ขาดหาย > 4ชม.")
+                integrity = "✅ ปกติ" if not issues else f"⚠️ {','.join(issues)}"
+            except:
+                pm25_24h, v_min, v_max = 0, 0, 0
+                integrity = "❌ ดึงประวัติไม่ได้"
+
+            # 2. Weather
+            weather = get_weather_data(s, lat, lon)
+            
+            # 3. Hotspot
+            hotspot = get_hotspot_data(lat, lon, weather['wind_deg'])
+            
+            # 4. Analysis
+            w_dir_th = weather['wind_dir'] if weather['wind_dir'] else "ทิศเหนือลม"
+            analysis_text = analyze_situation(pm25_now, pm25_24h, weather['wind_spd'], hotspot, integrity, w_dir_th)
+
+            red_stations.append({
+                "info": s,
+                "stats": {"now": pm25_now, "avg24": pm25_24h, "min": v_min, "max": v_max, "status": integrity},
+                "weather": weather,
+                "hotspot": hotspot,
+                "analysis": analysis_text
+            })
+
+    if red_stations:
+        msg = f"📊 *[รายงานเฝ้าระวัง PM2.5 ระดับวิกฤต]*\n⏰ ข้อมูลประจำวันที่: {now.strftime('%d %b เวลา %H:%M น.')}\n🔴 พบพื้นที่สีแดงจำนวน: *{len(red_stations)} สถานี*\n"
+        msg += "--------------------------------\n"
+        
+        for item in red_stations:
+            s = item['info']
+            st = item['stats']
+            w = item['weather']
+            h = item['hotspot']
+            
+            w_text = f"*(แหล่งข้อมูล: {w['source']})*\n"
+            if w['temp']: w_text += f"• *อุณหภูมิ:* {w['temp']}°C | *ความชื้น:* {w['hum']}%\n"
+            if w['wind_dir']: w_text += f"• *ลม:* พัดจาก *{w['wind_dir']}* | *ความเร็ว:* {w['wind_spd']:.1f} กม./ชม."
+            else: w_text += "• *ลม:* ไม่มีข้อมูล"
+
+            h_text = ""
+            if h and h['report_count'] > 0:
+                top_lu = max(h['landuse'], key=h['landuse'].get) if h['landuse'] else "-"
+                h_text = (f"*{h['scope_msg']}*\n"
+                          f"• *พบทั้งหมด:* {h['report_count']} จุด (สะสม 24ชม.)\n"
+                          f"• *พื้นที่หลัก:* {top_lu} ({h['landuse'].get(top_lu,0)})\n"
+                          f"• *ระยะใกล้สุด:* {h['nearest']:.1f} กม. ทาง*{h['nearest_dir']}*")
+            else:
+                h_text = "• ไม่พบจุดความร้อนในรัศมี 50 กม."
+
+            msg += (f"\n📍 *{s['nameTH']} ({s['stationID']})*\n"
+                    f"จังหวัด: {s['areaTH'].split(',')[-1].strip()}\n\n"
+                    f"💨 *1. ข้อมูลฝุ่น PM2.5*\n"
+                    f"• *รายชั่วโมง:* {st['now']} µg/m³ (🔴 วิกฤต)\n"
+                    f"• *เฉลี่ย 24 ชม:* {st['avg24']:.1f} µg/m³\n"
+                    f"• *พิสัย 48 ชม:* {st['min']} - {st['max']} µg/m³\n"
+                    f"• *สถานะข้อมูล:* {st['status']}\n\n"
+                    f"🌦️ *2. ข้อมูลอุตุนิยมวิทยา*\n{w_text}\n\n"
+                    f"🔥 *3. ข้อมูลจุดความร้อน (Hotspot)*\n{h_text}\n\n"
+                    f"📝 *4. ผลการวิเคราะห์*\n{item['analysis']}\n"
+                    f"================================\n")
+
+        requests.post("https://api.line.me/v2/bot/message/push", 
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
+                      json={"to": USER_ID, "messages": [{"type": "text", "text": msg}]})
+        print("ส่งรายงานเรียบร้อย")
+
+if __name__ == "__main__":
+    main()
