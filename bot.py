@@ -337,7 +337,7 @@ def main():
         val = s.get('AQILast', {}).get('PM25', {}).get('value')
         s_id = s['stationID']
         
-        if val and float(val) > 50.0 and s_id != "11t":
+        if val and float(val) > 75.1 and s_id != "11t":
             lat, lon = float(s['lat']), float(s['long'])
             
             # History Data
