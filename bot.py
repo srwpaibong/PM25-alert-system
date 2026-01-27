@@ -282,7 +282,7 @@ def main():
         history = {"last_date": today, "alerted_ids": {}}
 
     try:
-        res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php", timeout=30).json()
+        res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php", timeout=15).json()
     except: return
 
     red_stations = []
