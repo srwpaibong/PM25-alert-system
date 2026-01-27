@@ -105,12 +105,10 @@ def get_weather_data_smart(lat, lon):
         url = f"http://122.155.135.49/api/home/site/{aws_id}"
         try:
             res = requests.get(url, timeout=10).json()
-            # ดึง list ข้อมูลรายชั่วโมง
             items = res.get('data', {}).get('items', [])
             
             if items:
-                # เลือกข้อมูลตัวล่าสุดใน list (ปกติ API จะเรียงเวลามาให้แล้ว ตัวท้ายสุดคือล่าสุด)
-                # หรือถ้าไม่มีล่าสุด ให้เอาตัวไหนก็ได้ที่มีค่าลม
+                # เลือกข้อมูลตัวล่าสุด
                 valid_item = items[-1] 
                 
                 # ถ้าตัวล่าสุดไม่มีลม ลองย้อนกลับไปดู 2-3 ชม. ก่อนหน้า
@@ -131,8 +129,6 @@ def get_weather_data_smart(lat, lon):
                 weather['wind_deg'] = float(valid_item.get('winddir', 0))
                 
                 # แปลงทิศอังกฤษเป็นไทย
-                raw_dir = valid_item.get('winddirsign', 'N/A')
-                # ใช้ฟังก์ชันแปลงองศาเป็นไทยจะแม่นกว่าตัวอักษรย่อ
                 weather['wind_dir'] = deg_to_compass_thai(weather['wind_deg'])
                 
         except Exception as e:
@@ -176,7 +172,7 @@ def get_nearest_hotspot(lat, lon, wind_deg):
                 hotspot_info['bearing'] = bearing
                 hotspot_info['dir_text'] = deg_to_compass_thai(bearing)
                 
-                # เช็คว่าอยู่ต้นลมไหม (ไฟอยู่ทิศเดียวกับที่ลมพัดมา)
+                # เช็คว่าอยู่ต้นลมไหม
                 hotspot_info['is_upwind'] = is_upwind(bearing, wind_deg)
 
     except Exception as e:
@@ -185,7 +181,7 @@ def get_nearest_hotspot(lat, lon, wind_deg):
 
     return hotspot_info
 
-def analyze_situation(pm25_now, pm25_24, wind_spd, h_info, integrity):
+def analyze_situation(pm25_now, pm25_24, wind_spd, h_info, integrity, wind_dir_thai):
     """วิเคราะห์สถานการณ์แบบรวมศูนย์"""
     analysis = ""
     
@@ -210,9 +206,9 @@ def analyze_situation(pm25_now, pm25_24, wind_spd, h_info, integrity):
     # สรุปผล
     if pm25_now > 75:
         if factors:
-            analysis = f"✅ **สถานการณ์จริง:** ค่าฝุ่นสูงสอดคล้องกับปัจจัย: {', '.join(factors)}"
+            analysis = f"✅ สถานการณ์จริง: ค่าฝุ่นสูงสอดคล้องกับปัจจัย: {', '.join(factors)}"
         else:
-            analysis = "⚠️ **เฝ้าระวัง:** ค่าฝุ่นสูงโดยไม่พบปัจจัยแวดล้อมชัดเจน อาจเกิดจากแหล่งกำเนิดเฉพาะจุด (จราจร/โรงงาน)"
+            analysis = "⚠️ เฝ้าระวัง: ค่าฝุ่นสูงโดยไม่พบปัจจัยแวดล้อมชัดเจน อาจเกิดจากแหล่งกำเนิดเฉพาะจุด (จราจร/โรงงาน)"
             
     return analysis
 
@@ -231,51 +227,79 @@ def load_log():
             except: return {"last_date": "", "alerted_ids": {}}
     return {"last_date": "", "alerted_ids": {}}
 
+def analyze_station_integrity(s_id):
+    """วิเคราะห์ข้อมูลย้อนหลัง 48 ชม. ด้วย API ใหม่"""
+    now = datetime.datetime.now(TIMEZONE)
+    edate = now.strftime("%Y-%m-%d")
+    sdate = (now - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
+    
+    url = f"http://air4thai.com/forweb/getHistoryData.php?stationID={s_id}&param=PM25&type=hr&sdate={sdate}&edate={edate}&stime=00&etime=23"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=25).json()
+        data = res.get('stations', [{}])[0].get('data', [])
+        if not data: return "⚠️ ไม่พบประวัติ", "N/A", "ไม่ทราบเวลา"
+
+        df = pd.DataFrame(data)
+        df.rename(columns={'DATETIMEDATA': 'datetime', 'PM25': 'value'}, inplace=True)
+        df['value'] = pd.to_numeric(df['value'], errors='coerce')
+        
+        v_min, v_max = df['value'].min(), df['value'].max()
+        
+        issues = []
+        if df['value'].diff().abs().max() > 50: issues.append("Spike")
+        if (df['value'].rolling(window=5).std() == 0).any(): issues.append("Flatline")
+        if (df['value'] < 0).any(): issues.append("ค่าติดลบ")
+        if df['value'].isnull().sum() > 3: issues.append("ข้อมูลหาย")
+        
+        integrity_status = "✅ ปกติ" if not issues else f"⚠️ {', '.join(issues)}"
+        
+        red_start_time = "แดงต่อเนื่องเกิน 48 ชม."
+        found_non_red = False
+        for i in range(len(df)-1, -1, -1):
+            if df.iloc[i]['value'] <= 75.0:
+                if i < len(df)-1:
+                    red_start_time = df.iloc[i+1]['datetime']
+                else:
+                    red_start_time = "เพิ่งเริ่มแดงในชั่วโมงนี้"
+                found_non_red = True
+                break
+        
+        if not found_non_red and len(df) > 0:
+            red_start_time = df.iloc[0]['datetime']
+
+        return integrity_status, f"{v_min}-{v_max}", red_start_time
+    except Exception as e:
+        return f"❌ ระบบขัดข้อง ({str(e)[:10]})", "N/A", "N/A"
+
 def main():
     now = datetime.datetime.now(TIMEZONE)
+    today = now.strftime("%Y-%m-%d")
     history = load_log()
-    today_str = now.strftime("%Y-%m-%d")
     
-    if history.get('last_date') != today_str:
-        history = {"last_date": today_str, "alerted_ids": {}}
+    if history.get('last_date') != today:
+        history = {"last_date": today, "alerted_ids": {}}
 
     try:
-        res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php", timeout=20).json()
-    except:
-        return
+        res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php", timeout=30).json()
+    except: return
 
     red_stations = []
-
+    
     for s in res.get('stations', []):
+        s_id = s.get('stationID')
         val = s.get('AQILast', {}).get('PM25', {}).get('value')
-        s_id = s['stationID']
         
         if val and float(val) > 75.0 and s_id != "11t":
             lat, lon = float(s['lat']), float(s['long'])
             
-            # 1. History & Integrity
-            edate = now.strftime("%Y-%m-%d")
-            sdate = (now - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
-            hist_url = f"http://air4thai.com/forweb/getHistoryData.php?stationID={s_id}&param=PM25&type=hr&sdate={sdate}&edate={edate}&stime=00&etime=23"
-            try:
-                h_res = requests.get(hist_url, timeout=10).json()
-                data = h_res['stations'][0]['data']
-                df = pd.DataFrame(data)
-                df['PM25'] = pd.to_numeric(df['PM25'], errors='coerce')
-                pm25_now = float(val)
-                pm25_24h = df.tail(24)['PM25'].mean()
-                v_min, v_max = df['PM25'].min(), df['PM25'].max()
-                
-                issues = []
-                if df['PM25'].diff().abs().max() > 50: issues.append("Spike")
-                if (df['PM25'].rolling(4).std() == 0).any(): issues.append("Flatline")
-                if df['PM25'].isnull().sum() > 4: issues.append("ขาดหาย > 4ชม.")
-                integrity = "✅ ปกติ" if not issues else f"⚠️ {','.join(issues)}"
-            except:
-                pm25_24h, v_min, v_max = 0, 0, 0
-                integrity = "❌ ดึงประวัติไม่ได้"
+            # 1. Integrity Check
+            integrity, v_range, red_since = analyze_station_integrity(s_id)
+            pm25_now = float(val)
+            pm25_24h = pm25_now # Placeholder
 
-            # 2. Smart Weather (ดึงจากสถานีใกล้สุด)
+            # 2. Smart Weather
             weather = get_weather_data_smart(lat, lon)
             
             # 3. Nearest Hotspot
@@ -287,23 +311,23 @@ def main():
 
             red_stations.append({
                 "info": s,
-                "stats": {"now": pm25_now, "avg24": pm25_24h, "min": v_min, "max": v_max, "status": integrity},
+                "stats": {"now": pm25_now, "avg24": pm25_now, "range": v_range, "status": integrity},
                 "weather": weather,
                 "hotspot": h_info,
-                "analysis": analysis_text
+                "analysis": analysis_text,
+                "red_since": red_since
             })
 
-    # เงื่อนไขเดิม: ส่งเฉพาะเมื่อมีสถานีใหม่
+    # เรียงลำดับตามเวลาที่เริ่มแดง
+    red_stations.sort(key=lambda x: x['red_since'])
+
     new_stations = [s for s in red_stations if s['info']['stationID'] not in history['alerted_ids']]
-    
+
     if new_stations:
-        print(f"พบสถานีใหม่ {len(new_stations)} แห่ง")
-        
-        # เรียงลำดับ: เอาสถานีใหม่ไว้บนสุด
-        display_list = new_stations + [s for s in red_stations if s not in new_stations]
-        
-        msg = f"📊 *[รายงานเฝ้าระวัง PM2.5 ระดับวิกฤต]*\n⏰ ข้อมูล: {now.strftime('%d %b %H:%M น.')}\n🔴 พื้นที่สีแดง: *{len(red_stations)}* (🆕 เพิ่มใหม่ {len(new_stations)})\n"
+        msg = f"📊 [รายงานเฝ้าระวัง PM2.5 ระดับวิกฤต]\n⏰ ข้อมูล: {now.strftime('%d %b %H:%M น.')}\n🔴 พื้นที่สีแดง: {len(red_stations)} (🆕 เพิ่มใหม่ {len(new_stations)})\n"
         msg += "--------------------------------\n"
+        
+        display_list = new_stations + [s for s in red_stations if s not in new_stations]
         
         for item in display_list:
             s = item['info']
@@ -311,7 +335,7 @@ def main():
             w = item['weather']
             h = item['hotspot']
             
-            # บันทึก Log เฉพาะตัวใหม่
+            # Update Log
             if s['stationID'] not in history['alerted_ids']:
                 history['alerted_ids'][s['stationID']] = now.strftime("%H:%M")
                 new_tag = "🆕 "
@@ -324,12 +348,12 @@ def main():
             if w['wind_dir']: w_text += f"• ลม: พัดจาก {w['wind_dir']} | ความเร็ว: {w['wind_spd']:.1f} กม./ชม."
             else: w_text += "• ลม: ไม่มีข้อมูล"
 
-            # Hotspot Block (Nearest Logic)
+            # Hotspot Block
             if h['found']:
                 dist_km = h['dist']
                 h_text = f"(จุดที่ใกล้ที่สุด)\n• ระยะห่าง: {dist_km:.1f} กม. ทาง{h['dir_text']}\n• พื้นที่: {h['landuse']}\n"
-                if h['is_upwind']: h_text += "• 🌬️ *[อยู่ต้นลม]* ความเสี่ยงสูง"
-                else: h_text += "• 💨 *[อยู่ท้ายลม/ข้างลม]* ความเสี่ยงต่ำ"
+                if h['is_upwind']: h_text += "• 🌬️ [อยู่ต้นลม] ความเสี่ยงสูง"
+                else: h_text += "• 💨 [อยู่ท้ายลม/ข้างลม] ความเสี่ยงต่ำ"
             else:
                 h_text = "• ไม่พบข้อมูลจุดความร้อนในระบบ"
 
@@ -338,7 +362,7 @@ def main():
                     f"💨 1. ข้อมูลฝุ่น PM2.5\n"
                     f"• รายชั่วโมง: {st['now']} µg/m³ (🔴 วิกฤต)\n"
                     f"• เฉลี่ย 24 ชม: {st['avg24']:.1f} µg/m³\n"
-                    f"• พิสัย 48 ชม: {st['min']} - {st['max']} µg/m³\n"
+                    f"• พิสัย 48 ชม: {st['range']} µg/m³\n"
                     f"• สถานะข้อมูล: {st['status']}\n\n"
                     f"🌦️ 2. ข้อมูลอุตุนิยมวิทยา\n{w_text}\n\n"
                     f"🔥 3. ข้อมูลจุดความร้อน (Hotspot)\n{h_text}\n\n"
