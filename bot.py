@@ -122,7 +122,7 @@ def find_nearest_weather(lat, lon, tmd_features):
 def get_nearest_hotspot(lat, lon, wind_deg):
     """ค้นหาจุดความร้อนที่ใกล้ที่สุด (รองรับ GeoJSON)"""
     # API GISTDA ย้อนหลัง 1 วัน (ตามที่กำหนด)
-    url = "https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/1day?limit=1000&offset=0&ct_tn=ราชอาณาจักรไทย"
+    url = "https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/1day?limit=5000&offset=0&ct_tn=ราชอาณาจักรไทย"
     headers = {'accept': 'application/json', 'API-Key': GISTDA_KEY}
     
     hotspot_info = {
