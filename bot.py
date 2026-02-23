@@ -277,7 +277,7 @@ def main():
         val = s.get('AQILast', {}).get('PM25', {}).get('value')
         s_id = s['stationID']
         
-        if val and float(val) > 75.0 and s_id != "11t":
+        if val and float(val) > 50.0 and s_id != "11t":
             lat, lon = float(s['lat']), float(s['long'])
             pm25_now = float(val)
             
@@ -340,7 +340,7 @@ def main():
                     f"จังหวัด: {s['areaTH'].split(',')[-1].strip()}\n\n"
                     f"💨 1. ข้อมูลฝุ่น PM2.5\n"
                     f"• Range (AVG.24 hr): {st['range']} µg/m³\n"
-                    f"• Recent (AVG.1 hr): {st['now']} µg/m³\n"
+                    f"• Current Data (AVG.1 hr): {st['now']} µg/m³\n"
                     f"• AQI: {aqi}\n"
                     f"• Status: {st['status']}\n\n"
                     f"🌦️ 2. ข้อมูลอุตุนิยมวิทยาเบื้องต้น\n{w_text}\n\n"
