@@ -63,7 +63,7 @@ def format_thai_datetime(dt):
 
 def get_wind_category(speed_ms):
     """จัดเกณฑ์ความเร็วลม (หน่วย m/s)"""
-    if speed_ms is None: return "ไม่พบข้อมูลลม"
+    if speed_ms is None: return "ไม่ทราบเกณฑ์ลม"
     if speed_ms < 0.5: return "ลมสงบ"
     elif speed_ms <= 3.3: return "ลมอ่อน"
     elif speed_ms <= 7.9: return "ลมปานกลาง"
@@ -110,7 +110,7 @@ def find_nearest_weather(lat, lon, tmd_features):
         weather['temp'] = nearest_feature.get('temp')
         weather['hum'] = nearest_feature.get('humidity')
         
-        # ลมใช้หน่วย m/s ตามค่าดั้งเดิมของ API เพื่อประเมินเกณฑ์
+        # ลมใช้หน่วย m/s ตามค่าดั้งเดิมของ API
         w_speed = nearest_feature.get('windSpeed')
         if w_speed is not None:
             weather['wind_spd'] = float(w_speed)
@@ -123,8 +123,10 @@ def find_nearest_weather(lat, lon, tmd_features):
     return weather
 
 def get_nearest_hotspot(lat, lon, wind_deg):
-    """ค้นหาจุดความร้อนย้อนหลัง 3 วัน Limit 5000 ในประเทศไทย และนับเฉพาะรัศมี 100 กม."""
-    url = "https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/3days?limit=5000&offset=0&ct_tn=ราชอาณาจักรไทย"
+    """ค้นหาจุดความร้อนย้อนหลัง 3 วัน Limit 5000 ในประเทศไทย"""
+    # ใช้ URL Encoded เพื่อป้องกันปัญหาการอ่านอักขระไทยใน Requests
+    encoded_thailand = "%E0%B8%A3%E0%B8%B2%E0%B8%8A%E0%B8%AD%E0%B8%B2%E0%B8%93%E0%B8%B2%E0%B8%88%E0%B8%B1%E0%B8%81%E0%B8%A3%E0%B9%84%E0%B8%97%E0%B8%A2"
+    url = f"https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/3days?limit=5000&offset=0&ct_tn={encoded_thailand}"
     headers = {'accept': 'application/json', 'API-Key': GISTDA_KEY}
     
     hotspot_info = {
@@ -146,7 +148,7 @@ def get_nearest_hotspot(lat, lon, wind_deg):
             
             dist = haversine(lat, lon, h_lat, h_lon)
             
-            # พิจารณาเฉพาะจุดที่อยู่ในรัศมี 100 กม. (ถือว่าเป็นพื้นที่ใกล้เคียง)
+            # พิจารณาเฉพาะจุดที่อยู่ในรัศมี 100 กม.
             if dist <= 100:
                 hotspot_info['found'] = True
                 hotspot_info['nearby_count'] += 1
@@ -171,7 +173,7 @@ def get_nearest_hotspot(lat, lon, wind_deg):
     return hotspot_info
 
 def analyze_station_integrity(s_id):
-    """วิเคราะห์ความสมบูรณ์ของข้อมูลย้อนหลัง 48 ชม. และหา Range 24 ชม."""
+    """วิเคราะห์ความสมบูรณ์ของข้อมูลย้อนหลัง 48 ชม."""
     now = datetime.datetime.now(TIMEZONE)
     edate = now.strftime("%Y-%m-%d")
     sdate = (now - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
@@ -187,7 +189,6 @@ def analyze_station_integrity(s_id):
         df.rename(columns={'DATETIMEDATA': 'datetime', 'PM25': 'value'}, inplace=True)
         df['value'] = pd.to_numeric(df['value'], errors='coerce')
         
-        # คำนวณ Range เฉพาะ 24 ชม. ล่าสุด
         df_24h = df.tail(24)
         if df_24h.empty or df_24h['value'].isna().all():
             v_range = "N/A"
@@ -195,50 +196,27 @@ def analyze_station_integrity(s_id):
             v_min, v_max = df_24h['value'].min(), df_24h['value'].max()
             v_range = f"{v_min:.1f} - {v_max:.1f}"
 
-        # เช็ค Integrity จากข้อมูลทั้งหมด
         issues = []
-        if df['value'].diff().abs().max() > 50: issues.append("Spike (ค่าพุ่งสูงผิดปกติ)")
+        if df['value'].diff().abs().max() > 50: issues.append("Spike (ค่ากระโดดผิดปกติ)")
         if (df['value'].rolling(4).std() == 0).any(): issues.append("Flatline (ค่าค้าง)")
         if (df['value'] < 0).any(): issues.append("Negative (ค่าติดลบ)")
         if df['value'].isnull().sum() > 4: issues.append("Missing (ข้อมูลขาดหายหลายชั่วโมง)")
         
-        status = "ข้อมูลตรวจวัดอยู่ในเกณฑ์ปกติ" if not issues else f"ข้อสังเกต: {', '.join(issues)}"
+        status = "ข้อมูลตรวจวัดอยู่ในเกณฑ์ปกติ" if not issues else f"พบความผิดปกติ: {', '.join(issues)}"
         return status, v_range
     except:
         return "ไม่สามารถเชื่อมต่อฐานข้อมูลย้อนหลังได้", "N/A"
 
-def analyze_situation(wind_spd, h_info, integrity_status):
-    """วิเคราะห์สถานการณ์รูปแบบวิชาการ/รายงานผู้บริหาร"""
-    
-    # 1. สรุปสถานะเครื่อง
+def analyze_situation(integrity_status):
+    """ประเมินเฉพาะสถานะเครื่องตรวจวัด"""
     if "ปกติ" in integrity_status:
         machine_status = "ยืนยันข้อมูลปกติ เบื้องต้นระบบตรวจวัดทำงานสมบูรณ์"
     else:
-        machine_status = f"เบื้องต้นข้อมูลตรวจวัดมีความเสี่ยงผิดปกติ ({integrity_status.split(':')[-1].strip()}) รอเจ้าหน้าที่ตรวจสอบยืนยัน"
+        # ตัดคำว่า 'พบความผิดปกติ:' ออกเพื่อให้อ่านลื่นขึ้น
+        issues = integrity_status.replace("พบความผิดปกติ: ", "")
+        machine_status = f"เบื้องต้นข้อมูลตรวจวัดมีความเสี่ยงผิดปกติ ({issues}) รอเจ้าหน้าที่ตรวจสอบยืนยัน"
 
-    # 2. ปัจจัยแวดล้อม
-    wind_cat = get_wind_category(wind_spd)
-    env_factors = []
-    
-    if wind_cat in ["ลมสงบ", "ลมอ่อน"]:
-        env_factors.append("สภาพอากาศนิ่งเอื้อต่อการสะสมตัวของฝุ่นละอองในพื้นที่")
-        
-    if h_info.get('error'):
-        env_factors.append("ไม่สามารถเชื่อมต่อฐานข้อมูล GISTDA เพื่อประเมินจุดความร้อนได้ในขณะนี้")
-    elif h_info['found']:
-        if h_info['dist'] < 20:
-            env_factors.append(f"พบจุดความร้อนในระยะใกล้เคียงสถานี ({h_info['dist']:.1f} กม.)")
-        elif h_info['is_upwind']:
-            env_factors.append(f"มีแนวโน้มได้รับผลกระทบจากจุดความร้อนทางทิศต้นลม (ห่างออกไป {h_info['dist']:.1f} กม.)")
-        else:
-            env_factors.append(f"พบจุดความร้อนสะสมจำนวน {h_info['nearby_count']} จุดในพื้นที่ใกล้เคียง")
-    else:
-        env_factors.append("ไม่พบข้อมูลจุดความร้อนในพื้นที่ใกล้เคียง ประเมินเบื้องต้นค่าฝุ่นที่สูงอาจเกิดจากมลพิษทางอากาศข้ามแดน หรือแหล่งกำเนิดอื่นที่ดาวเทียมไม่สามารถตรวจจับได้")
-
-    if not env_factors:
-        env_factors.append("ไม่พบปัจจัยทางอุตุนิยมวิทยาหรือจุดความร้อนที่ส่งผลกระทบชัดเจน")
-
-    return f"• สถานะเครื่องวัด: {machine_status}\n• ปัจจัยแวดล้อม: {' ประกอบกับ '.join(env_factors)}"
+    return f"• สถานะเครื่องวัด: {machine_status}"
 
 def load_log():
     if os.path.exists(LOG_FILE):
@@ -285,7 +263,7 @@ def main():
             weather = find_nearest_weather(lat, lon, tmd_features)
             h_info = get_nearest_hotspot(lat, lon, weather['wind_deg'])
             
-            analysis = analyze_situation(weather['wind_spd'], h_info, integrity_status)
+            analysis = analyze_situation(integrity_status)
 
             current_red_stations.append({
                 "info": s,
@@ -302,10 +280,13 @@ def main():
         for s in new_stations:
             history['alerted_ids'].append(s['info']['stationID'])
             
-        msg = f"📊 [รายงานการเฝ้าระวังและแจ้งเตือน PM2.5]\n⏰ ข้อมูล ณ วันที่: {date_formatted}\n🔴 พื้นที่เฝ้าระวังระดับวิกฤต: {len(current_red_stations)} สถานี (แจ้งเตือนใหม่ {len(new_stations)})\n"
-        msg += "--------------------------------\n"
+        header_msg = f"📊 [รายงานการติดตามระบบเฝ้าระวัง PM2.5]\n⏰ ข้อมูล ณ วันที่: {date_formatted}\n🔴 พื้นที่เฝ้าระวังระดับวิกฤต: {len(current_red_stations)} สถานี (แจ้งเตือนใหม่ {len(new_stations)})\n"
+        header_msg += "--------------------------------\n"
         
         display_list = new_stations + [s for s in current_red_stations if s not in new_stations]
+        
+        messages_to_send = []
+        current_msg = header_msg
         
         for item in display_list:
             s = item['info']
@@ -316,44 +297,79 @@ def main():
             new_tag = "🆕 " if s['stationID'] in [n['info']['stationID'] for n in new_stations] else ""
             aqi = calculate_thai_aqi(st['now'])
             
-            # Weather Block
-            w_text = f"(แหล่งข้อมูล: {w['source']})\n"
+            sections = []
+
+            # 1. PM2.5 Block
+            pm25_text = (f"💨 1. ข้อมูลฝุ่น PM2.5\n"
+                         f"• Range (AVG.24 hr): {st['range']} µg/m³\n"
+                         f"• Current Data (AVG.1 hr): {st['now']} µg/m³\n"
+                         f"• AQI: {aqi}\n"
+                         f"• Status: {st['status']}")
+            sections.append(pm25_text)
+
+            # 2. Weather Block
+            w_text = f"🌦️ 2. ข้อมูลอุตุนิยมวิทยาเบื้องต้น\n(แหล่งข้อมูล: {w['source']})\n"
             if w['temp']: w_text += f"• อุณหภูมิ: {w['temp']}°C | ความชื้น: {w['hum']}%\n"
             if w['wind_dir']: 
                 wind_cat = get_wind_category(w['wind_spd'])
                 w_text += f"• ทิศทางลม: พัดจาก{w['wind_dir']}\n• ความเร็วลม: {wind_cat} ({w['wind_spd']:.1f} m/s)"
             else: w_text += "• ข้อมูลลม: ไม่พบข้อมูลอุตุนิยมวิทยาในพื้นที่ใกล้เคียง"
+            sections.append(w_text)
 
-            # Hotspot Block
-            if h.get('error'):
-                h_text = "• ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลจุดความร้อนจาก GISTDA ได้ในขณะนี้ (API Timeout)"
-            elif h['found']:
-                h_text = (f"• พบจุดความร้อนจำนวน: {h['nearby_count']} จุด (ในรัศมี 100 กม.)\n"
+            # 3. Hotspot Block (เพิ่มเฉพาะเมื่อเจอจุดความร้อนเท่านั้น)
+            if h.get('found') and not h.get('error'):
+                h_text = (f"🔥 3. ข้อมูลจุดความร้อนสะสม (ข้อมูลจาก GISTDA)\n"
+                          f"• พบจุดความร้อนจำนวน: {h['nearby_count']} จุด (ในรัศมี 100 กม.)\n"
                           f"• จุดที่ใกล้ที่สุด: ห่าง {h['dist']:.1f} กม. ทาง{h['dir_text']}\n"
                           f"• พื้นที่การเกิดหลัก: {h['main_landuse']}\n")
                 if h['is_upwind']: h_text += "• ทิศทางควัน: [อยู่ต้นลม] ความเสี่ยงสูง"
                 else: h_text += "• ทิศทางควัน: [อยู่ท้ายลม/ข้างลม] ความเสี่ยงต่ำ"
+                
+                sections.append(h_text)
+                next_section_num = 4
             else:
-                h_text = "• ไม่พบข้อมูลจุดความร้อน (ในประเทศไทย) ในพื้นที่ใกล้เคียงที่อาจส่งผลต่อการเพิ่มขึ้นของฝุ่น PM2.5"
+                # ถ้าไม่เจอจุดความร้อน หรือ API ขัดข้อง ให้ข้ามข้อ 3 ไปเลย
+                next_section_num = 3
 
-            msg += (f"\n{new_tag}📍 {s['nameTH']} ({s['stationID']})\n"
-                    f"จังหวัด: {s['areaTH'].split(',')[-1].strip()}\n\n"
-                    f"💨 1. ข้อมูลฝุ่น PM2.5\n"
-                    f"• Range (AVG.24 hr): {st['range']} µg/m³\n"
-                    f"• Current Data (AVG.1 hr): {st['now']} µg/m³\n"
-                    f"• AQI: {aqi}\n"
-                    f"• Status: {st['status']}\n\n"
-                    f"🌦️ 2. ข้อมูลอุตุนิยมวิทยาเบื้องต้น\n{w_text}\n\n"
-                    f"🔥 3. ข้อมูลจุดความร้อนสะสม (ข้อมูลจาก GISTDA)\n{h_text}\n\n"
-                    f"📝 4. ประเมินสถานการณ์เบื้องต้น\n{item['analysis']}\n"
-                    f"================================\n")
+            # 4. Analysis Block (เลขหัวข้อปรับเปลี่ยนอัตโนมัติ)
+            analysis_text = f"📝 {next_section_num}. ประเมินสถานการณ์เบื้องต้น\n{item['analysis']}"
+            sections.append(analysis_text)
 
-        requests.post("https://api.line.me/v2/bot/message/push", 
-                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
-                      json={"to": USER_ID, "messages": [{"type": "text", "text": msg}]})
+            # รวมเนื้อหา
+            item_text = (f"\n{new_tag}📍 {s['nameTH']} ({s['stationID']})\n"
+                         f"จังหวัด: {s['areaTH'].split(',')[-1].strip()}\n\n" +
+                         "\n\n".join(sections) +
+                         "\n================================\n")
+            
+            if len(current_msg) + len(item_text) > 4000:
+                messages_to_send.append(current_msg)
+                current_msg = item_text
+            else:
+                current_msg += item_text
+
+        if current_msg:
+            messages_to_send.append(current_msg)
+
+        send_success = True
+        for msg_text in messages_to_send:
+            try:
+                response = requests.post("https://api.line.me/v2/bot/message/push", 
+                              headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
+                              json={"to": USER_ID, "messages": [{"type": "text", "text": msg_text}]})
+                
+                if response.status_code != 200:
+                    print(f"LINE API Error: {response.status_code} - {response.text}")
+                    send_success = False
+            except Exception as e:
+                print(f"เกิดข้อผิดพลาดในการเชื่อมต่อกับ LINE API: {e}")
+                send_success = False
         
-        with open(LOG_FILE, 'w') as f:
-            json.dump(history, f)
+        if send_success:
+            print("ส่งข้อมูลเข้า LINE สำเร็จเรียบร้อย")
+            with open(LOG_FILE, 'w') as f:
+                json.dump(history, f)
+        else:
+            print("คำเตือน: ส่งข้อมูลไม่ครบถ้วน อาจมีปัญหาจากฝั่ง LINE API")
     else:
         print("ไม่มีสถานีแจ้งเตือนใหม่")
 
