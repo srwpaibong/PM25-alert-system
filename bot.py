@@ -301,8 +301,8 @@ def main():
 
             # 1. PM2.5 Block
             pm25_text = (f"💨 1. ข้อมูลฝุ่น PM2.5\n"
-                         f"• Range (AVG.24 hr): {st['range']} µg/m³\n"
-                         f"• Current Data (AVG.1 hr): {st['now']} µg/m³\n"
+                         f"• Range (AVG.1 hr): {st['range']} µg/m³\n"
+                         f"• Current Data (AVG.24 hr): {st['now']} µg/m³\n"
                          f"• AQI: {aqi}\n"
                          f"• Status: {st['status']}")
             sections.append(pm25_text)
