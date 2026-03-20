@@ -122,53 +122,70 @@ def find_nearest_weather(lat, lon, tmd_features):
             
     return weather
 
-def get_province_hotspot(province_name, period="1day"):
+def get_hotspot_stats(province_name):
     """
-    ค้นหาจุดความร้อน Limit 5000 และนับแยกตามจังหวัด 
-    รองรับ period = "1day" หรือ "3days"
+    ดึงข้อมูล 3 วันย้อนหลังรวดเดียว (Limit 5000)
+    แล้วนำมา Filter แยกเป็นของ 24 ชม. และ 3 วัน ใน Python เอง
     """
     encoded_thailand = "%E0%B8%A3%E0%B8%B2%E0%B8%8A%E0%B8%AD%E0%B8%B2%E0%B8%93%E0%B8%B2%E0%B8%88%E0%B8%B1%E0%B8%81%E0%B8%A3%E0%B9%84%E0%B8%97%E0%B8%A2"
-    url = f"https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/{period}?limit=5000&offset=0&ct_tn={encoded_thailand}"
+    url = f"https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/3days?limit=5000&offset=0&ct_tn={encoded_thailand}"
     headers = {'accept': 'application/json', 'API-Key': GISTDA_KEY}
     
     clean_prov = province_name.replace('จ.', '').replace('จังหวัด', '').strip()
     if clean_prov == "กรุงเทพฯ": clean_prov = "กรุงเทพมหานคร"
     
-    hotspot_info = {
-        "count": 0,
-        "landuse": {},
-        "latest_date": "",
+    # กำหนดวันที่อ้างอิง: วันนี้, เมื่อวาน, 2 และ 3 วันก่อน
+    now = datetime.datetime.now(TIMEZONE)
+    yesterday_dt = now - datetime.timedelta(days=1)
+    yesterday_str = yesterday_dt.strftime("%Y-%m-%d")
+    
+    day2_dt = now - datetime.timedelta(days=2)
+    day3_dt = now - datetime.timedelta(days=3)
+    valid_3days_strs = [yesterday_str, day2_dt.strftime("%Y-%m-%d"), day3_dt.strftime("%Y-%m-%d")]
+    
+    result = {
         "error": False,
-        "province": clean_prov
+        "province": clean_prov,
+        "yesterday_date": yesterday_str,
+        "1day": {"count": 0, "landuse": {}},
+        "3days": {"count": 0, "landuse": {}}
     }
     
     try:
         res = requests.get(url, headers=headers, timeout=20).json()
         features = res.get('features', [])
         
-        dates_all = [f.get('properties', {}).get('acq_date', '').split('T')[0] for f in features if f.get('properties', {}).get('acq_date')]
-        if dates_all:
-            hotspot_info['latest_date'] = max(dates_all)
-            
-        prov_features = []
         for f in features:
             props = f.get('properties', {})
             pv_tn = props.get('pv_tn', '')
-            if pv_tn and clean_prov in pv_tn:
-                prov_features.append(props)
-        
-        hotspot_info['count'] = len(prov_features)
-        
-        if prov_features:
-            for p in prov_features:
-                lu = p.get('lu_hp_name', p.get('lu_name', 'ไม่ระบุ'))
-                hotspot_info['landuse'][lu] = hotspot_info['landuse'].get(lu, 0) + 1
+            
+            # กรองเอาเฉพาะจังหวัดที่ตรงกัน
+            if not pv_tn or clean_prov not in pv_tn:
+                continue
+                
+            acq_date_full = props.get('acq_date', '')
+            if not acq_date_full:
+                continue
+                
+            # แปลง format วันที่ เช่น 2026-03-19T00:00:00 -> 2026-03-19
+            acq_date = acq_date_full.split('T')[0]
+            lu = props.get('lu_hp_name', props.get('lu_name', 'ไม่ระบุ'))
+            
+            # สถิติแบบสะสม 24 ชม. (ยึดตามวันที่ของเมื่อวาน)
+            if acq_date == yesterday_str:
+                result["1day"]["count"] += 1
+                result["1day"]["landuse"][lu] = result["1day"]["landuse"].get(lu, 0) + 1
+                
+            # สถิติแบบสะสม 3 วัน (รวมของเมื่อวานและย้อนไปอีก 2 วัน)
+            if acq_date in valid_3days_strs:
+                result["3days"]["count"] += 1
+                result["3days"]["landuse"][lu] = result["3days"]["landuse"].get(lu, 0) + 1
 
     except Exception as e:
-        print(f"GISTDA API Error ({period}): {e}")
-        hotspot_info['error'] = True
+        print(f"GISTDA API Error: {e}")
+        result["error"] = True
 
-    return hotspot_info
+    return result
 
 def analyze_station_integrity(s_id):
     now = datetime.datetime.now(TIMEZONE)
@@ -258,9 +275,8 @@ def main():
             integrity_status, v_range = analyze_station_integrity(s_id)
             weather = find_nearest_weather(lat, lon, tmd_features)
             
-            # ดึงข้อมูลจุดความร้อน 2 ชุด (1 วัน และ 3 วัน)
-            h_info_1d = get_province_hotspot(province_raw, "1day")
-            h_info_3d = get_province_hotspot(province_raw, "3days")
+            # ดึงข้อมูลจุดความร้อนด้วยฟังก์ชันใหม่ที่จัดการเรื่องวันอย่างแม่นยำ
+            hotspot_stats = get_hotspot_stats(province_raw)
             
             analysis = analyze_situation(integrity_status)
 
@@ -268,8 +284,7 @@ def main():
                 "info": s,
                 "stats": {"now": pm25_now, "range": v_range, "status": integrity_status},
                 "weather": weather,
-                "hotspot_1d": h_info_1d,
-                "hotspot_3d": h_info_3d,
+                "hotspot": hotspot_stats,
                 "analysis": analysis
             })
 
@@ -292,8 +307,7 @@ def main():
             s = item['info']
             st = item['stats']
             w = item['weather']
-            h1 = item['hotspot_1d']
-            h3 = item['hotspot_3d']
+            h = item['hotspot']
             
             new_tag = "🆕 " if s['stationID'] in [n['info']['stationID'] for n in new_stations] else ""
             aqi = calculate_thai_aqi(st['now'])
@@ -308,7 +322,7 @@ def main():
                          f"• Status: {st['status']}")
             sections.append(pm25_text)
 
-            # 2. Analysis Block
+            # 2. Analysis Block (เลื่อนขึ้นมาตามที่ขอ)
             analysis_text = f"📝 2. สรุปสถานะเครื่องตรวจวัดเบื้องต้น\n{item['analysis']}"
             sections.append(analysis_text)
 
@@ -322,35 +336,29 @@ def main():
             sections.append(w_text)
 
             # 4. Hotspot Block
-            prov = h3.get('province') or h1.get('province') or s['areaTH'].split(',')[-1].strip().replace('จ.', '').replace('จังหวัด', '').strip()
-            if prov == "กรุงเทพฯ": prov = "กรุงเทพมหานคร"
-            
-            latest_date_raw = h1.get('latest_date') or h3.get('latest_date')
-            date_str = format_date_only(latest_date_raw)
-            
             h_text = "🔥 4. ข้อมูลจุดความร้อนเบื้องต้น (GISTDA)\n"
-            h_text += f"  • จังหวัด{prov} (ข้อมูลวันที่ {date_str})\n"
-            
-            # --- ข้อมูลสะสม 24 ชม. ---
-            if h1.get('error'):
-                h_text += "  📍 [สะสม 24 ชั่วโมงล่าสุด] ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้\n"
+            if h.get('error'):
+                h_text += "  • ไม่สามารถดึงข้อมูลจุดความร้อนมาแสดงได้"
             else:
-                h_text += f"  📍 [สะสม 24 ชั่วโมงล่าสุด] พบ {h1.get('count', 0)} จุด\n"
-                if h1.get('count', 0) > 0:
-                    sorted_lu1 = sorted(h1.get('landuse', {}).items(), key=lambda item: item[1], reverse=True)
+                date_str = format_date_only(h['yesterday_date'])
+                h_text += f"  • จังหวัด{h['province']} (ข้อมูลวันที่ {date_str})\n"
+                
+                # --- ข้อมูลสะสม 24 ชม. ---
+                h_text += f"  📍 [สะสม 24 ชั่วโมงล่าสุด] พบ {h['1day']['count']} จุด\n"
+                if h['1day']['count'] > 0:
+                    sorted_lu1 = sorted(h['1day']['landuse'].items(), key=lambda item: item[1], reverse=True)
                     for lu, c in sorted_lu1:
                         h_text += f"       - {lu}: {c} จุด\n"
+                
+                # ลบ newline ส่วนเกินถ้าย่อหน้าจบพอดี
+                h_text = h_text.rstrip() + "\n"
                         
-            # --- ข้อมูลสะสม 3 วัน ---
-            if h3.get('error'):
-                h_text += "  📍 [สะสม 3 วันย้อนหลัง] ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้"
-            else:
-                h_text += f"  📍 [สะสม 3 วันย้อนหลัง] พบ {h3.get('count', 0)} จุด"
-                if h3.get('count', 0) > 0:
-                    sorted_lu3 = sorted(h3.get('landuse', {}).items(), key=lambda item: item[1], reverse=True)
+                # --- ข้อมูลสะสม 3 วัน ---
+                h_text += f"  📍 [สะสม 3 วันย้อนหลัง] พบ {h['3days']['count']} จุด"
+                if h['3days']['count'] > 0:
+                    sorted_lu3 = sorted(h['3days']['landuse'].items(), key=lambda item: item[1], reverse=True)
                     for lu, c in sorted_lu3:
                         h_text += f"\n       - {lu}: {c} จุด"
-
             sections.append(h_text)
 
             # รวมเนื้อหาใน 1 สถานี
