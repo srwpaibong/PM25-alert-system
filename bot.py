@@ -124,61 +124,60 @@ def find_nearest_weather(lat, lon, tmd_features):
 
 def get_hotspot_stats(province_name):
     """
-    ดึงข้อมูล 3 วันย้อนหลังรวดเดียว (Limit 5000)
-    แล้วนำมา Filter แยกเป็นของ 24 ชม. และ 3 วัน ใน Python เอง
+    ดึงข้อมูลจุดความร้อนแยกเป็นรายวัน (1day) และสะสม 3 วัน (3days) 
+    โดยดึงจาก API โดยตรง ไม่กรองวันที่เอง เพื่อแก้ปัญหา Time Lag ของดาวเทียม
     """
     encoded_thailand = "%E0%B8%A3%E0%B8%B2%E0%B8%8A%E0%B8%AD%E0%B8%B2%E0%B8%93%E0%B8%B2%E0%B8%88%E0%B8%B1%E0%B8%81%E0%B8%A3%E0%B9%84%E0%B8%97%E0%B8%A2"
-    url = f"https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/3days?limit=5000&offset=0&ct_tn={encoded_thailand}"
+    base_url = "https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs"
     headers = {'accept': 'application/json', 'API-Key': GISTDA_KEY}
     
     clean_prov = province_name.replace('จ.', '').replace('จังหวัด', '').strip()
     if clean_prov == "กรุงเทพฯ": clean_prov = "กรุงเทพมหานคร"
     
-    # กำหนดวันที่อ้างอิง: วันนี้, เมื่อวาน, 2 และ 3 วันก่อน
-    now = datetime.datetime.now(TIMEZONE)
-    yesterday_dt = now - datetime.timedelta(days=1)
-    yesterday_str = yesterday_dt.strftime("%Y-%m-%d")
-    
-    day2_dt = now - datetime.timedelta(days=2)
-    day3_dt = now - datetime.timedelta(days=3)
-    valid_3days_strs = [yesterday_str, day2_dt.strftime("%Y-%m-%d"), day3_dt.strftime("%Y-%m-%d")]
-    
     result = {
         "error": False,
         "province": clean_prov,
-        "yesterday_date": yesterday_str,
+        "latest_date": "",
         "1day": {"count": 0, "landuse": {}},
         "3days": {"count": 0, "landuse": {}}
     }
     
     try:
-        res = requests.get(url, headers=headers, timeout=20).json()
-        features = res.get('features', [])
+        # --- ดึงข้อมูล 1 วัน (1day) ---
+        url_1d = f"{base_url}/1day?limit=5000&offset=0&ct_tn={encoded_thailand}"
+        res_1d = requests.get(url_1d, headers=headers, timeout=20).json()
+        features_1d = res_1d.get('features', [])
         
-        for f in features:
+        # หาวันที่ล่าสุดจากชุดข้อมูล 1 วัน
+        dates_1d = [f.get('properties', {}).get('acq_date', '').split('T')[0] for f in features_1d if f.get('properties', {}).get('acq_date')]
+        if dates_1d:
+            result['latest_date'] = max(dates_1d)
+            
+        for f in features_1d:
             props = f.get('properties', {})
             pv_tn = props.get('pv_tn', '')
-            
-            # กรองเอาเฉพาะจังหวัดที่ตรงกัน
-            if not pv_tn or clean_prov not in pv_tn:
-                continue
-                
-            acq_date_full = props.get('acq_date', '')
-            if not acq_date_full:
-                continue
-                
-            # แปลง format วันที่ เช่น 2026-03-19T00:00:00 -> 2026-03-19
-            acq_date = acq_date_full.split('T')[0]
-            lu = props.get('lu_hp_name', props.get('lu_name', 'ไม่ระบุ'))
-            
-            # สถิติแบบสะสม 24 ชม. (ยึดตามวันที่ของเมื่อวาน)
-            if acq_date == yesterday_str:
+            if pv_tn and clean_prov in pv_tn:
                 result["1day"]["count"] += 1
+                lu = props.get('lu_hp_name') or props.get('lu_name') or 'ไม่ระบุ'
                 result["1day"]["landuse"][lu] = result["1day"]["landuse"].get(lu, 0) + 1
                 
-            # สถิติแบบสะสม 3 วัน (รวมของเมื่อวานและย้อนไปอีก 2 วัน)
-            if acq_date in valid_3days_strs:
+        # --- ดึงข้อมูล 3 วัน (3days) ---
+        url_3d = f"{base_url}/3days?limit=5000&offset=0&ct_tn={encoded_thailand}"
+        res_3d = requests.get(url_3d, headers=headers, timeout=20).json()
+        features_3d = res_3d.get('features', [])
+        
+        # ถ้า 1 วันไม่มีข้อมูลวันที่ ให้หาจาก 3 วันแทน
+        if not result['latest_date']:
+            dates_3d = [f.get('properties', {}).get('acq_date', '').split('T')[0] for f in features_3d if f.get('properties', {}).get('acq_date')]
+            if dates_3d:
+                result['latest_date'] = max(dates_3d)
+
+        for f in features_3d:
+            props = f.get('properties', {})
+            pv_tn = props.get('pv_tn', '')
+            if pv_tn and clean_prov in pv_tn:
                 result["3days"]["count"] += 1
+                lu = props.get('lu_hp_name') or props.get('lu_name') or 'ไม่ระบุ'
                 result["3days"]["landuse"][lu] = result["3days"]["landuse"].get(lu, 0) + 1
 
     except Exception as e:
@@ -275,7 +274,7 @@ def main():
             integrity_status, v_range = analyze_station_integrity(s_id)
             weather = find_nearest_weather(lat, lon, tmd_features)
             
-            # ดึงข้อมูลจุดความร้อนด้วยฟังก์ชันใหม่ที่จัดการเรื่องวันอย่างแม่นยำ
+            # ดึงข้อมูลจุดความร้อนด้วยฟังก์ชันใหม่
             hotspot_stats = get_hotspot_stats(province_raw)
             
             analysis = analyze_situation(integrity_status)
@@ -340,7 +339,7 @@ def main():
             if h.get('error'):
                 h_text += "  • ไม่สามารถดึงข้อมูลจุดความร้อนมาแสดงได้"
             else:
-                date_str = format_date_only(h['yesterday_date'])
+                date_str = format_date_only(h['latest_date'])
                 h_text += f"  • จังหวัด{h['province']} (ข้อมูลวันที่ {date_str})\n"
                 
                 # --- ข้อมูลสะสม 24 ชม. ---
