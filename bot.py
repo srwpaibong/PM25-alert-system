@@ -124,11 +124,15 @@ def find_nearest_weather(lat, lon, tmd_features):
 
 def get_hotspot_stats(province_name):
     """
-    ดึงข้อมูลจุดความร้อนแยกเป็นรายวัน (1day) และสะสม 3 วัน (3days) 
-    โดยดึงจาก API โดยตรง ไม่กรองวันที่เอง เพื่อแก้ปัญหา Time Lag ของดาวเทียม
+    ดึงข้อมูล 3 วันย้อนหลังรวดเดียวและจัดการการแยกวันที่เองใน Python
+    ใช้วิธีแนบ Parameter เพื่อหลีกเลี่ยงปัญหาการแปลงรหัส URL %E0%B8... ที่ทำให้ API คืนค่า 0
     """
-    encoded_thailand = "%E0%B8%A3%E0%B8%B2%E0%B8%8A%E0%B8%AD%E0%B8%B2%E0%B8%93%E0%B8%B2%E0%B8%88%E0%B8%B1%E0%B8%81%E0%B8%A3%E0%B9%84%E0%B8%97%E0%B8%A2"
-    base_url = "https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs"
+    url = "https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/3days"
+    params = {
+        "limit": 5000,
+        "offset": 0,
+        "ct_tn": "ราชอาณาจักรไทย"
+    }
     headers = {'accept': 'application/json', 'API-Key': GISTDA_KEY}
     
     clean_prov = province_name.replace('จ.', '').replace('จังหวัด', '').strip()
@@ -143,42 +147,46 @@ def get_hotspot_stats(province_name):
     }
     
     try:
-        # --- ดึงข้อมูล 1 วัน (1day) ---
-        url_1d = f"{base_url}/1day?limit=5000&offset=0&ct_tn={encoded_thailand}"
-        res_1d = requests.get(url_1d, headers=headers, timeout=20).json()
-        features_1d = res_1d.get('features', [])
+        res = requests.get(url, headers=headers, params=params, timeout=20)
+        res.raise_for_status() # ดักจับ HTTP Error
+        features = res.json().get('features', [])
         
-        # หาวันที่ล่าสุดจากชุดข้อมูล 1 วัน
-        dates_1d = [f.get('properties', {}).get('acq_date', '').split('T')[0] for f in features_1d if f.get('properties', {}).get('acq_date')]
-        if dates_1d:
-            result['latest_date'] = max(dates_1d)
-            
-        for f in features_1d:
-            props = f.get('properties', {})
-            pv_tn = props.get('pv_tn', '')
-            if pv_tn and clean_prov in pv_tn:
-                result["1day"]["count"] += 1
-                lu = props.get('lu_hp_name') or props.get('lu_name') or 'ไม่ระบุ'
-                result["1day"]["landuse"][lu] = result["1day"]["landuse"].get(lu, 0) + 1
+        # 1. หาวันที่ล่าสุดที่มีในระบบเพื่อใช้เป็นเกณฑ์ (แก้ปัญหา Time Lag)
+        all_dates = []
+        for f in features:
+            acq_date_full = f.get('properties', {}).get('acq_date', '')
+            if acq_date_full:
+                all_dates.append(acq_date_full.split('T')[0])
                 
-        # --- ดึงข้อมูล 3 วัน (3days) ---
-        url_3d = f"{base_url}/3days?limit=5000&offset=0&ct_tn={encoded_thailand}"
-        res_3d = requests.get(url_3d, headers=headers, timeout=20).json()
-        features_3d = res_3d.get('features', [])
-        
-        # ถ้า 1 วันไม่มีข้อมูลวันที่ ให้หาจาก 3 วันแทน
-        if not result['latest_date']:
-            dates_3d = [f.get('properties', {}).get('acq_date', '').split('T')[0] for f in features_3d if f.get('properties', {}).get('acq_date')]
-            if dates_3d:
-                result['latest_date'] = max(dates_3d)
+        if all_dates:
+            result['latest_date'] = max(all_dates)
+        else:
+            # กรณีที่ข้อมูลว่างเปล่าจริงๆ ให้ใช้วันที่เมื่อวานเป็นค่าเริ่มต้น
+            now = datetime.datetime.now(TIMEZONE)
+            result['latest_date'] = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-        for f in features_3d:
+        target_date = result['latest_date']
+
+        # 2. นับรวมข้อมูลและแยกตามประเภท Land Use สำหรับจังหวัดเป้าหมาย
+        for f in features:
             props = f.get('properties', {})
             pv_tn = props.get('pv_tn', '')
+            
             if pv_tn and clean_prov in pv_tn:
-                result["3days"]["count"] += 1
+                acq_date_full = props.get('acq_date', '')
+                if not acq_date_full: continue
+                
+                f_date = acq_date_full.split('T')[0]
                 lu = props.get('lu_hp_name') or props.get('lu_name') or 'ไม่ระบุ'
+                
+                # เก็บยอด 3 วัน (รวมทุกจุดที่ผ่านเงื่อนไข)
+                result["3days"]["count"] += 1
                 result["3days"]["landuse"][lu] = result["3days"]["landuse"].get(lu, 0) + 1
+                
+                # เก็บยอด 24 ชม.ล่าสุด (เอาเฉพาะจุดที่เกิดในวันที่ล่าสุด)
+                if f_date == target_date:
+                    result["1day"]["count"] += 1
+                    result["1day"]["landuse"][lu] = result["1day"]["landuse"].get(lu, 0) + 1
 
     except Exception as e:
         print(f"GISTDA API Error: {e}")
@@ -274,7 +282,7 @@ def main():
             integrity_status, v_range = analyze_station_integrity(s_id)
             weather = find_nearest_weather(lat, lon, tmd_features)
             
-            # ดึงข้อมูลจุดความร้อนด้วยฟังก์ชันใหม่
+            # ดึงข้อมูลจุดความร้อนด้วยฟังก์ชันที่ปรับปรุงการ Query
             hotspot_stats = get_hotspot_stats(province_raw)
             
             analysis = analyze_situation(integrity_status)
@@ -321,7 +329,7 @@ def main():
                          f"• Status: {st['status']}")
             sections.append(pm25_text)
 
-            # 2. Analysis Block (เลื่อนขึ้นมาตามที่ขอ)
+            # 2. Analysis Block
             analysis_text = f"📝 2. สรุปสถานะเครื่องตรวจวัดเบื้องต้น\n{item['analysis']}"
             sections.append(analysis_text)
 
@@ -337,7 +345,7 @@ def main():
             # 4. Hotspot Block
             h_text = "🔥 4. ข้อมูลจุดความร้อนเบื้องต้น (GISTDA)\n"
             if h.get('error'):
-                h_text += "  • ไม่สามารถดึงข้อมูลจุดความร้อนมาแสดงได้"
+                h_text += "  • ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลจุดความร้อนมาแสดงได้"
             else:
                 date_str = format_date_only(h['latest_date'])
                 h_text += f"  • จังหวัด{h['province']} (ข้อมูลวันที่ {date_str})\n"
@@ -349,7 +357,6 @@ def main():
                     for lu, c in sorted_lu1:
                         h_text += f"       - {lu}: {c} จุด\n"
                 
-                # ลบ newline ส่วนเกินถ้าย่อหน้าจบพอดี
                 h_text = h_text.rstrip() + "\n"
                         
                 # --- ข้อมูลสะสม 3 วัน ---
