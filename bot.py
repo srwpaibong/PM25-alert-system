@@ -47,22 +47,23 @@ def deg_to_compass_thai(num):
         return arr[(val % 16)]
     except: return "ไม่ระบุ"
 
-def is_upwind(target_bearing, wind_deg):
-    if wind_deg is None: return False
-    diff = abs(target_bearing - wind_deg)
-    diff = min(diff, 360 - diff)
-    return diff <= 45
-
 def format_thai_datetime(dt):
-    """แปลงวันที่เป็นรูปแบบทางการภาษาไทย"""
     thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
                    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
     year = dt.year + 543
     month = thai_months[dt.month]
     return f"{dt.day} {month} {year} เวลา {dt.strftime('%H:%M')} น."
 
+def format_date_only(date_str):
+    if not date_str: return "ไม่ระบุ"
+    try:
+        dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+        thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
+                       "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        return f"{dt.day} {thai_months[dt.month]} {dt.year + 543}"
+    except: return date_str
+
 def get_wind_category(speed_ms):
-    """จัดเกณฑ์ความเร็วลม (หน่วย m/s)"""
     if speed_ms is None: return "ไม่ทราบเกณฑ์ลม"
     if speed_ms < 0.5: return "ลมสงบ"
     elif speed_ms <= 3.3: return "ลมอ่อน"
@@ -110,7 +111,6 @@ def find_nearest_weather(lat, lon, tmd_features):
         weather['temp'] = nearest_feature.get('temp')
         weather['hum'] = nearest_feature.get('humidity')
         
-        # ลมใช้หน่วย m/s ตามค่าดั้งเดิมของ API
         w_speed = nearest_feature.get('windSpeed')
         if w_speed is not None:
             weather['wind_spd'] = float(w_speed)
@@ -122,58 +122,55 @@ def find_nearest_weather(lat, lon, tmd_features):
             
     return weather
 
-def get_nearest_hotspot(lat, lon, wind_deg):
-    """ค้นหาจุดความร้อนย้อนหลัง 3 วัน Limit 5000 ในประเทศไทย"""
-    # ใช้ URL Encoded เพื่อป้องกันปัญหาการอ่านอักขระไทยใน Requests
+def get_province_hotspot(province_name, period="1day"):
+    """
+    ค้นหาจุดความร้อน Limit 5000 และนับแยกตามจังหวัด 
+    รองรับ period = "1day" หรือ "3days"
+    """
     encoded_thailand = "%E0%B8%A3%E0%B8%B2%E0%B8%8A%E0%B8%AD%E0%B8%B2%E0%B8%93%E0%B8%B2%E0%B8%88%E0%B8%B1%E0%B8%81%E0%B8%A3%E0%B9%84%E0%B8%97%E0%B8%A2"
-    url = f"https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/3days?limit=5000&offset=0&ct_tn={encoded_thailand}"
+    url = f"https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/{period}?limit=5000&offset=0&ct_tn={encoded_thailand}"
     headers = {'accept': 'application/json', 'API-Key': GISTDA_KEY}
     
+    clean_prov = province_name.replace('จ.', '').replace('จังหวัด', '').strip()
+    if clean_prov == "กรุงเทพฯ": clean_prov = "กรุงเทพมหานคร"
+    
     hotspot_info = {
-        "found": False, "dist": 9999, "dir_text": "", "main_landuse": "",
-        "is_upwind": False, "nearby_count": 0, "error": False
+        "count": 0,
+        "landuse": {},
+        "latest_date": "",
+        "error": False,
+        "province": clean_prov
     }
-    landuses = {}
     
     try:
         res = requests.get(url, headers=headers, timeout=20).json()
         features = res.get('features', [])
         
+        dates_all = [f.get('properties', {}).get('acq_date', '').split('T')[0] for f in features if f.get('properties', {}).get('acq_date')]
+        if dates_all:
+            hotspot_info['latest_date'] = max(dates_all)
+            
+        prov_features = []
         for f in features:
-            coords = f.get('geometry', {}).get('coordinates', [])
-            if len(coords) < 2: continue
-            
-            h_lon, h_lat = coords[0], coords[1]
             props = f.get('properties', {})
-            
-            dist = haversine(lat, lon, h_lat, h_lon)
-            
-            # พิจารณาเฉพาะจุดที่อยู่ในรัศมี 100 กม.
-            if dist <= 100:
-                hotspot_info['found'] = True
-                hotspot_info['nearby_count'] += 1
-                
-                lu = props.get('lu_hp_name', 'ไม่ระบุ')
-                landuses[lu] = landuses.get(lu, 0) + 1
-                
-                # หาจุดที่ใกล้ที่สุดเพื่อรายงานทิศทาง
-                if dist < hotspot_info['dist']:
-                    hotspot_info['dist'] = dist
-                    bearing = calculate_bearing(lat, lon, h_lat, h_lon)
-                    hotspot_info['dir_text'] = deg_to_compass_thai(bearing)
-                    hotspot_info['is_upwind'] = is_upwind(bearing, wind_deg)
-
-        if hotspot_info['found']:
-            hotspot_info['main_landuse'] = max(landuses, key=landuses.get)
+            pv_tn = props.get('pv_tn', '')
+            if pv_tn and clean_prov in pv_tn:
+                prov_features.append(props)
+        
+        hotspot_info['count'] = len(prov_features)
+        
+        if prov_features:
+            for p in prov_features:
+                lu = p.get('lu_hp_name', p.get('lu_name', 'ไม่ระบุ'))
+                hotspot_info['landuse'][lu] = hotspot_info['landuse'].get(lu, 0) + 1
 
     except Exception as e:
-        print(f"GISTDA API Error: {e}")
+        print(f"GISTDA API Error ({period}): {e}")
         hotspot_info['error'] = True
 
     return hotspot_info
 
 def analyze_station_integrity(s_id):
-    """วิเคราะห์ความสมบูรณ์ของข้อมูลย้อนหลัง 48 ชม."""
     now = datetime.datetime.now(TIMEZONE)
     edate = now.strftime("%Y-%m-%d")
     sdate = (now - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
@@ -200,7 +197,7 @@ def analyze_station_integrity(s_id):
         if df['value'].diff().abs().max() > 50: issues.append("Spike (ค่ากระโดดผิดปกติ)")
         if (df['value'].rolling(4).std() == 0).any(): issues.append("Flatline (ค่าค้าง)")
         if (df['value'] < 0).any(): issues.append("Negative (ค่าติดลบ)")
-        if df['value'].isnull().sum() > 4: issues.append("Missing (ข้อมูลขาดหายหลายชั่วโมง)")
+        if df['value'].isnull().sum() > 4: issues.append("Missing (ข้อมูลขาดหาย)")
         
         status = "ข้อมูลตรวจวัดอยู่ในเกณฑ์ปกติ" if not issues else f"พบความผิดปกติ: {', '.join(issues)}"
         return status, v_range
@@ -208,11 +205,9 @@ def analyze_station_integrity(s_id):
         return "ไม่สามารถเชื่อมต่อฐานข้อมูลย้อนหลังได้", "N/A"
 
 def analyze_situation(integrity_status):
-    """ประเมินเฉพาะสถานะเครื่องตรวจวัด"""
     if "ปกติ" in integrity_status:
         machine_status = "ยืนยันข้อมูลปกติ เบื้องต้นระบบตรวจวัดทำงานสมบูรณ์"
     else:
-        # ตัดคำว่า 'พบความผิดปกติ:' ออกเพื่อให้อ่านลื่นขึ้น
         issues = integrity_status.replace("พบความผิดปกติ: ", "")
         machine_status = f"เบื้องต้นข้อมูลตรวจวัดมีความเสี่ยงผิดปกติ ({issues}) รอเจ้าหน้าที่ตรวจสอบยืนยัน"
 
@@ -258,10 +253,14 @@ def main():
         if val and float(val) > 75.0 and s_id != "11t":
             lat, lon = float(s['lat']), float(s['long'])
             pm25_now = float(val)
+            province_raw = s['areaTH'].split(',')[-1].strip()
             
             integrity_status, v_range = analyze_station_integrity(s_id)
             weather = find_nearest_weather(lat, lon, tmd_features)
-            h_info = get_nearest_hotspot(lat, lon, weather['wind_deg'])
+            
+            # ดึงข้อมูลจุดความร้อน 2 ชุด (1 วัน และ 3 วัน)
+            h_info_1d = get_province_hotspot(province_raw, "1day")
+            h_info_3d = get_province_hotspot(province_raw, "3days")
             
             analysis = analyze_situation(integrity_status)
 
@@ -269,7 +268,8 @@ def main():
                 "info": s,
                 "stats": {"now": pm25_now, "range": v_range, "status": integrity_status},
                 "weather": weather,
-                "hotspot": h_info,
+                "hotspot_1d": h_info_1d,
+                "hotspot_3d": h_info_3d,
                 "analysis": analysis
             })
 
@@ -292,7 +292,8 @@ def main():
             s = item['info']
             st = item['stats']
             w = item['weather']
-            h = item['hotspot']
+            h1 = item['hotspot_1d']
+            h3 = item['hotspot_3d']
             
             new_tag = "🆕 " if s['stationID'] in [n['info']['stationID'] for n in new_stations] else ""
             aqi = calculate_thai_aqi(st['now'])
@@ -307,8 +308,12 @@ def main():
                          f"• Status: {st['status']}")
             sections.append(pm25_text)
 
-            # 2. Weather Block
-            w_text = f"🌦️ 2. ข้อมูลอุตุนิยมวิทยาเบื้องต้น\n(แหล่งข้อมูล: {w['source']})\n"
+            # 2. Analysis Block
+            analysis_text = f"📝 2. สรุปสถานะเครื่องตรวจวัดเบื้องต้น\n{item['analysis']}"
+            sections.append(analysis_text)
+
+            # 3. Weather Block
+            w_text = f"🌦️ 3. ข้อมูลอุตุนิยมวิทยาเบื้องต้น\n(แหล่งข้อมูล: {w['source']})\n"
             if w['temp']: w_text += f"• อุณหภูมิ: {w['temp']}°C | ความชื้น: {w['hum']}%\n"
             if w['wind_dir']: 
                 wind_cat = get_wind_category(w['wind_spd'])
@@ -316,26 +321,39 @@ def main():
             else: w_text += "• ข้อมูลลม: ไม่พบข้อมูลอุตุนิยมวิทยาในพื้นที่ใกล้เคียง"
             sections.append(w_text)
 
-            # 3. Hotspot Block (เพิ่มเฉพาะเมื่อเจอจุดความร้อนเท่านั้น)
-            if h.get('found') and not h.get('error'):
-                h_text = (f"🔥 3. ข้อมูลจุดความร้อนสะสม (ข้อมูลจาก GISTDA)\n"
-                          f"• พบจุดความร้อนจำนวน: {h['nearby_count']} จุด (ในรัศมี 100 กม.)\n"
-                          f"• จุดที่ใกล้ที่สุด: ห่าง {h['dist']:.1f} กม. ทาง{h['dir_text']}\n"
-                          f"• พื้นที่การเกิดหลัก: {h['main_landuse']}\n")
-                if h['is_upwind']: h_text += "• ทิศทางควัน: [อยู่ต้นลม] ความเสี่ยงสูง"
-                else: h_text += "• ทิศทางควัน: [อยู่ท้ายลม/ข้างลม] ความเสี่ยงต่ำ"
-                
-                sections.append(h_text)
-                next_section_num = 4
+            # 4. Hotspot Block
+            prov = h3.get('province') or h1.get('province') or s['areaTH'].split(',')[-1].strip().replace('จ.', '').replace('จังหวัด', '').strip()
+            if prov == "กรุงเทพฯ": prov = "กรุงเทพมหานคร"
+            
+            latest_date_raw = h1.get('latest_date') or h3.get('latest_date')
+            date_str = format_date_only(latest_date_raw)
+            
+            h_text = "🔥 4. ข้อมูลจุดความร้อนเบื้องต้น (GISTDA)\n"
+            h_text += f"  • จังหวัด{prov} (ข้อมูลวันที่ {date_str})\n"
+            
+            # --- ข้อมูลสะสม 24 ชม. ---
+            if h1.get('error'):
+                h_text += "  📍 [สะสม 24 ชั่วโมงล่าสุด] ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้\n"
             else:
-                # ถ้าไม่เจอจุดความร้อน หรือ API ขัดข้อง ให้ข้ามข้อ 3 ไปเลย
-                next_section_num = 3
+                h_text += f"  📍 [สะสม 24 ชั่วโมงล่าสุด] พบ {h1.get('count', 0)} จุด\n"
+                if h1.get('count', 0) > 0:
+                    sorted_lu1 = sorted(h1.get('landuse', {}).items(), key=lambda item: item[1], reverse=True)
+                    for lu, c in sorted_lu1:
+                        h_text += f"       - {lu}: {c} จุด\n"
+                        
+            # --- ข้อมูลสะสม 3 วัน ---
+            if h3.get('error'):
+                h_text += "  📍 [สะสม 3 วันย้อนหลัง] ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้"
+            else:
+                h_text += f"  📍 [สะสม 3 วันย้อนหลัง] พบ {h3.get('count', 0)} จุด"
+                if h3.get('count', 0) > 0:
+                    sorted_lu3 = sorted(h3.get('landuse', {}).items(), key=lambda item: item[1], reverse=True)
+                    for lu, c in sorted_lu3:
+                        h_text += f"\n       - {lu}: {c} จุด"
 
-            # 4. Analysis Block (เลขหัวข้อปรับเปลี่ยนอัตโนมัติ)
-            analysis_text = f"📝 {next_section_num}. ประเมินสถานการณ์เบื้องต้น\n{item['analysis']}"
-            sections.append(analysis_text)
+            sections.append(h_text)
 
-            # รวมเนื้อหา
+            # รวมเนื้อหาใน 1 สถานี
             item_text = (f"\n{new_tag}📍 {s['nameTH']} ({s['stationID']})\n"
                          f"จังหวัด: {s['areaTH'].split(',')[-1].strip()}\n\n" +
                          "\n\n".join(sections) +
