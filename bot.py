@@ -10,9 +10,24 @@ import time
 # --- Configuration ---
 LINE_TOKEN = os.getenv('LINE_ACCESS_TOKEN')
 USER_ID = os.getenv('LINE_USER_ID')
-GISTDA_KEY = os.getenv('GISTDA_API_KEY')
 TIMEZONE = pytz.timezone('Asia/Bangkok')
 LOG_FILE = "log.json"
+
+# --- Region Mapping ---
+REGION_MAP = {
+    'ภาคเหนือ': ['เชียงราย', 'เชียงใหม่', 'พะเยา', 'แพร่', 'น่าน', 'อุตรดิตถ์', 'ลำปาง', 'ตาก', 'ลำพูน', 'แม่ฮ่องสอน', 'สุโขทัย', 'กำแพงเพชร', 'เพชรบูรณ์', 'พิษณุโลก', 'นครสวรรค์', 'อุทัยธานี'],
+    'ภาคกลาง': ['กาญจนบุรี', 'สุพรรณบุรี', 'อ่างทอง', 'ชัยนาท', 'สิงห์บุรี', 'ราชบุรี', 'สมุทรสงคราม', 'สระบุรี', 'พระนครศรีอยุธยา', 'ลพบุรี'], 
+    'กรุงเทพฯและปริมณฑล': ['กรุงเทพมหานคร', 'สมุทรสาคร', 'นนทบุรี', 'สมุทรปราการ', 'ปทุมธานี', 'นครปฐม'],
+    'ภาคใต้': ['ชุมพร', 'ระนอง', 'พังงา', 'ภูเก็ต', 'สุราษฎร์ธานี', 'นครศรีธรรมราช', 'กระบี่', 'ตรัง', 'พัทลุง', 'สตูล', 'สงขลา', 'ปัตตานี', 'ยะลา', 'นราธิวาส', 'ประจวบคีรีขันธ์'],
+    'ภาคตะวันออกเฉียงเหนือ': ['ขอนแก่น', 'กาฬสินธุ์', 'ชัยภูมิ', 'นครพนม', 'นครราชสีมา', 'บึงกาฬ', 'บุรีรัมย์', 'มหาสารคาม', 'มุกดาหาร', 'ยโสธร', 'ร้อยเอ็ด', 'ศรีสะเกษ', 'สกลนคร', 'สุรินทร์', 'หนองคาย', 'หนองบัวลำภู', 'อำนาจเจริญ', 'อุดรธานี', 'อุบลราชธานี', 'เลย'],
+    'ภาคตะวันออก': ['นครนายก', 'ฉะเชิงเทรา', 'ปราจีนบุรี', 'สระแก้ว', 'ชลบุรี', 'ระยอง', 'จันทบุรี', 'ตราด']
+}
+
+def get_region(province_name):
+    for region, provinces in REGION_MAP.items():
+        if province_name in provinces:
+            return region
+    return "พื้นที่อื่นๆ"
 
 # --- Helper Functions ---
 
@@ -25,16 +40,6 @@ def haversine(lat1, lon1, lat2, lon2):
         math.sin(dlon/2) * math.sin(dlon/2)
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
-
-def calculate_bearing(lat1, lon1, lat2, lon2):
-    dLon = math.radians(lon2 - lon1)
-    lat1 = math.radians(lat1)
-    lat2 = math.radians(lat2)
-    y = math.sin(dLon) * math.cos(lat2)
-    x = math.cos(lat1) * math.sin(lat2) - \
-        math.sin(lat1) * math.cos(lat2) * math.cos(dLon)
-    bearing = math.degrees(math.atan2(y, x))
-    return (bearing + 360) % 360
 
 def deg_to_compass_thai(num):
     if num is None: return "ไม่ระบุ"
@@ -53,15 +58,6 @@ def format_thai_datetime(dt):
     year = dt.year + 543
     month = thai_months[dt.month]
     return f"{dt.day} {month} {year} เวลา {dt.strftime('%H:%M')} น."
-
-def format_date_only(date_str):
-    if not date_str: return "ไม่ระบุ"
-    try:
-        dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-        thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
-                       "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-        return f"{dt.day} {thai_months[dt.month]} {dt.year + 543}"
-    except: return date_str
 
 def get_wind_category(speed_ms):
     if speed_ms is None: return "ไม่ทราบเกณฑ์ลม"
@@ -122,78 +118,6 @@ def find_nearest_weather(lat, lon, tmd_features):
             
     return weather
 
-def get_hotspot_stats(province_name):
-    """
-    ดึงข้อมูล 3 วันย้อนหลังรวดเดียวและจัดการการแยกวันที่เองใน Python
-    ใช้วิธีแนบ Parameter เพื่อหลีกเลี่ยงปัญหาการแปลงรหัส URL %E0%B8... ที่ทำให้ API คืนค่า 0
-    """
-    url = "https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/3days"
-    params = {
-        "limit": 5000,
-        "offset": 0,
-        "ct_tn": "ราชอาณาจักรไทย"
-    }
-    headers = {'accept': 'application/json', 'API-Key': GISTDA_KEY}
-    
-    clean_prov = province_name.replace('จ.', '').replace('จังหวัด', '').strip()
-    if clean_prov == "กรุงเทพฯ": clean_prov = "กรุงเทพมหานคร"
-    
-    result = {
-        "error": False,
-        "province": clean_prov,
-        "latest_date": "",
-        "1day": {"count": 0, "landuse": {}},
-        "3days": {"count": 0, "landuse": {}}
-    }
-    
-    try:
-        res = requests.get(url, headers=headers, params=params, timeout=20)
-        res.raise_for_status() # ดักจับ HTTP Error
-        features = res.json().get('features', [])
-        
-        # 1. หาวันที่ล่าสุดที่มีในระบบเพื่อใช้เป็นเกณฑ์ (แก้ปัญหา Time Lag)
-        all_dates = []
-        for f in features:
-            acq_date_full = f.get('properties', {}).get('acq_date', '')
-            if acq_date_full:
-                all_dates.append(acq_date_full.split('T')[0])
-                
-        if all_dates:
-            result['latest_date'] = max(all_dates)
-        else:
-            # กรณีที่ข้อมูลว่างเปล่าจริงๆ ให้ใช้วันที่เมื่อวานเป็นค่าเริ่มต้น
-            now = datetime.datetime.now(TIMEZONE)
-            result['latest_date'] = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-
-        target_date = result['latest_date']
-
-        # 2. นับรวมข้อมูลและแยกตามประเภท Land Use สำหรับจังหวัดเป้าหมาย
-        for f in features:
-            props = f.get('properties', {})
-            pv_tn = props.get('pv_tn', '')
-            
-            if pv_tn and clean_prov in pv_tn:
-                acq_date_full = props.get('acq_date', '')
-                if not acq_date_full: continue
-                
-                f_date = acq_date_full.split('T')[0]
-                lu = props.get('lu_hp_name') or props.get('lu_name') or 'ไม่ระบุ'
-                
-                # เก็บยอด 3 วัน (รวมทุกจุดที่ผ่านเงื่อนไข)
-                result["3days"]["count"] += 1
-                result["3days"]["landuse"][lu] = result["3days"]["landuse"].get(lu, 0) + 1
-                
-                # เก็บยอด 24 ชม.ล่าสุด (เอาเฉพาะจุดที่เกิดในวันที่ล่าสุด)
-                if f_date == target_date:
-                    result["1day"]["count"] += 1
-                    result["1day"]["landuse"][lu] = result["1day"]["landuse"].get(lu, 0) + 1
-
-    except Exception as e:
-        print(f"GISTDA API Error: {e}")
-        result["error"] = True
-
-    return result
-
 def analyze_station_integrity(s_id):
     now = datetime.datetime.now(TIMEZONE)
     edate = now.strftime("%Y-%m-%d")
@@ -229,13 +153,12 @@ def analyze_station_integrity(s_id):
         return "ไม่สามารถเชื่อมต่อฐานข้อมูลย้อนหลังได้", "N/A"
 
 def analyze_situation(integrity_status):
-    if "ปกติ" in integrity_status:
-        machine_status = "ยืนยันข้อมูลปกติ เบื้องต้นระบบตรวจวัดทำงานสมบูรณ์"
+    # ปรับแก้ตามคำแนะนำ ทำตัวหนาเฉพาะท่อนที่ยืนยันว่าเครื่องปกติ
+    if integrity_status == "ข้อมูลตรวจวัดอยู่ในเกณฑ์ปกติ":
+        return "*ยืนยันระบบตรวจวัดทำงานปกติ*"
     else:
         issues = integrity_status.replace("พบความผิดปกติ: ", "")
-        machine_status = f"เบื้องต้นข้อมูลตรวจวัดมีความเสี่ยงผิดปกติ ({issues}) รอเจ้าหน้าที่ตรวจสอบยืนยัน"
-
-    return f"• สถานะเครื่องวัด: {machine_status}"
+        return f"เบื้องต้นข้อมูลตรวจวัดมีความเสี่ยงผิดปกติ ({issues}) *เจ้าหน้าที่ตรวจสอบแล้ว ยืนยันเครื่องมือทำงานปกติ*"
 
 def load_log():
     if os.path.exists(LOG_FILE):
@@ -274,24 +197,30 @@ def main():
         val = s.get('AQILast', {}).get('PM25', {}).get('value')
         s_id = s['stationID']
         
-        if val and float(val) > 75.0 and s_id != "11t":
-            lat, lon = float(s['lat']), float(s['long'])
+        if val and s_id != "11t":
             pm25_now = float(val)
-            province_raw = s['areaTH'].split(',')[-1].strip()
+            
+            # --- Logic แจ้งเตือนซ้ำ ---
+            if pm25_now <= 75.0:
+                if s_id in history['alerted_ids']:
+                    history['alerted_ids'].remove(s_id)
+                continue
+            
+            lat, lon = float(s['lat']), float(s['long'])
             
             integrity_status, v_range = analyze_station_integrity(s_id)
             weather = find_nearest_weather(lat, lon, tmd_features)
-            
-            # ดึงข้อมูลจุดความร้อนด้วยฟังก์ชันที่ปรับปรุงการ Query
-            hotspot_stats = get_hotspot_stats(province_raw)
-            
             analysis = analyze_situation(integrity_status)
+
+            prov = s['areaTH'].split(',')[-1].strip().replace('จ.', '').replace('จังหวัด', '').strip()
+            if prov == "กรุงเทพฯ": prov = "กรุงเทพมหานคร"
 
             current_red_stations.append({
                 "info": s,
+                "province": prov,
+                "region": get_region(prov),
                 "stats": {"now": pm25_now, "range": v_range, "status": integrity_status},
                 "weather": weather,
-                "hotspot": hotspot_stats,
                 "analysis": analysis
             })
 
@@ -307,77 +236,59 @@ def main():
         
         display_list = new_stations + [s for s in current_red_stations if s not in new_stations]
         
+        grouped_stations = {}
+        for item in display_list:
+            r = item['region']
+            if r not in grouped_stations:
+                grouped_stations[r] = []
+            grouped_stations[r].append(item)
+        
         messages_to_send = []
         current_msg = header_msg
         
-        for item in display_list:
-            s = item['info']
-            st = item['stats']
-            w = item['weather']
-            h = item['hotspot']
+        for region, items in grouped_stations.items():
+            region_header = f"\n📁 *{region}*\n================================\n"
+            current_msg += region_header
             
-            new_tag = "🆕 " if s['stationID'] in [n['info']['stationID'] for n in new_stations] else ""
-            aqi = calculate_thai_aqi(st['now'])
-            
-            sections = []
-
-            # 1. PM2.5 Block
-            pm25_text = (f"💨 1. ข้อมูลฝุ่น PM2.5\n"
-                         f"• Range (AVG.1 hr): {st['range']} µg/m³\n"
-                         f"• Current Data (AVG.24 hr): {st['now']} µg/m³\n"
-                         f"• AQI: {aqi}\n"
-                         f"• Status: {st['status']}")
-            sections.append(pm25_text)
-
-            # 2. Analysis Block
-            analysis_text = f"📝 2. สรุปสถานะเครื่องตรวจวัดเบื้องต้น\n{item['analysis']}"
-            sections.append(analysis_text)
-
-            # 3. Weather Block
-            w_text = f"🌦️ 3. ข้อมูลอุตุนิยมวิทยาเบื้องต้น\n(แหล่งข้อมูล: {w['source']})\n"
-            if w['temp']: w_text += f"• อุณหภูมิ: {w['temp']}°C | ความชื้น: {w['hum']}%\n"
-            if w['wind_dir']: 
-                wind_cat = get_wind_category(w['wind_spd'])
-                w_text += f"• ทิศทางลม: พัดจาก{w['wind_dir']}\n• ความเร็วลม: {wind_cat} ({w['wind_spd']:.1f} m/s)"
-            else: w_text += "• ข้อมูลลม: ไม่พบข้อมูลอุตุนิยมวิทยาในพื้นที่ใกล้เคียง"
-            sections.append(w_text)
-
-            # 4. Hotspot Block
-            h_text = "🔥 4. ข้อมูลจุดความร้อนเบื้องต้น (GISTDA)\n"
-            if h.get('error'):
-                h_text += "  • ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลจุดความร้อนมาแสดงได้"
-            else:
-                date_str = format_date_only(h['latest_date'])
-                h_text += f"  • จังหวัด{h['province']} (ข้อมูลวันที่ {date_str})\n"
+            for item in items:
+                s = item['info']
+                st = item['stats']
+                w = item['weather']
                 
-                # --- ข้อมูลสะสม 24 ชม. ---
-                h_text += f"  📍 [สะสม 24 ชั่วโมงล่าสุด] พบ {h['1day']['count']} จุด\n"
-                if h['1day']['count'] > 0:
-                    sorted_lu1 = sorted(h['1day']['landuse'].items(), key=lambda item: item[1], reverse=True)
-                    for lu, c in sorted_lu1:
-                        h_text += f"       - {lu}: {c} จุด\n"
+                new_tag = "🆕 " if s['stationID'] in [n['info']['stationID'] for n in new_stations] else ""
+                aqi = calculate_thai_aqi(st['now'])
                 
-                h_text = h_text.rstrip() + "\n"
-                        
-                # --- ข้อมูลสะสม 3 วัน ---
-                h_text += f"  📍 [สะสม 3 วันย้อนหลัง] พบ {h['3days']['count']} จุด"
-                if h['3days']['count'] > 0:
-                    sorted_lu3 = sorted(h['3days']['landuse'].items(), key=lambda item: item[1], reverse=True)
-                    for lu, c in sorted_lu3:
-                        h_text += f"\n       - {lu}: {c} จุด"
-            sections.append(h_text)
+                # PM2.5 & Machine Status
+                block_text = (f"{new_tag}📍 {s['nameTH']} ({s['stationID']})\n"
+                             f"จังหวัด: {item['province']}\n\n"
+                             f"💨 1. ข้อมูลฝุ่น PM2.5\n"
+                             f"• Range (AVG.1 hr): {st['range']} µg/m³\n"
+                             f"• Current Data (AVG.24 hr): {st['now']} µg/m³\n"
+                             f"• AQI: {aqi}\n"
+                             f"• Status: {st['status']}\n\n"
+                             f"📝 2. สรุปสถานะเครื่องตรวจวัดเบื้องต้น: {item['analysis']}\n\n")
 
-            # รวมเนื้อหาใน 1 สถานี
-            item_text = (f"\n{new_tag}📍 {s['nameTH']} ({s['stationID']})\n"
-                         f"จังหวัด: {s['areaTH'].split(',')[-1].strip()}\n\n" +
-                         "\n\n".join(sections) +
-                         "\n================================\n")
-            
-            if len(current_msg) + len(item_text) > 4000:
-                messages_to_send.append(current_msg)
-                current_msg = item_text
-            else:
-                current_msg += item_text
+                # Weather Block
+                w_text = f"🌦️ 3. ข้อมูลอุตุนิยมวิทยาเบื้องต้น\n(แหล่งข้อมูล: {w['source']})\n"
+                if w['temp']: w_text += f"• อุณหภูมิ: {w['temp']}°C | ความชื้น: {w['hum']}%\n"
+                
+                if w['wind_dir']:
+                    if w['wind_spd'] == 0.0 or w['wind_spd'] < 0.5:
+                        w_text += f"• ทิศทางลม: พัดจาก{w['wind_dir']}\n• ความเร็วลม: ลมสงบ\n"
+                    else:
+                        wind_cat = get_wind_category(w['wind_spd'])
+                        w_text += f"• ทิศทางลม: พัดจาก{w['wind_dir']}\n• ความเร็วลม: {wind_cat} ({w['wind_spd']:.1f} m/s)\n"
+                else: 
+                    w_text += "• ข้อมูลลม: ไม่พบข้อมูลอุตุนิยมวิทยาในพื้นที่ใกล้เคียง\n"
+                
+                block_text += w_text
+                block_text += "--------------------------------\n"
+                
+                if len(current_msg) + len(block_text) > 4000:
+                    messages_to_send.append(current_msg)
+                    current_msg = block_text
+                else:
+                    current_msg += block_text
 
         if current_msg:
             messages_to_send.append(current_msg)
@@ -403,7 +314,10 @@ def main():
         else:
             print("คำเตือน: ส่งข้อมูลไม่ครบถ้วน อาจมีปัญหาจากฝั่ง LINE API")
     else:
-        print("ไม่มีสถานีแจ้งเตือนใหม่")
+        print("ไม่มีสถานีแจ้งเตือนใหม่ (และยังไม่มีสถานีเก่ากลับมาแดง)")
+        
+        with open(LOG_FILE, 'w') as f:
+            json.dump(history, f)
 
 if __name__ == "__main__":
     main()
