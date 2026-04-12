@@ -5,13 +5,11 @@ import json
 import datetime
 import pytz
 import math
-import time
 from collections import defaultdict
 
 # --- Configuration ---
 LINE_TOKEN = os.getenv('LINE_ACCESS_TOKEN')
 USER_ID = os.getenv('LINE_USER_ID')
-GISTDA_KEY = os.getenv('GISTDA_API_KEY')
 TIMEZONE = pytz.timezone('Asia/Bangkok')
 LOG_FILE = "log.json"
 
@@ -60,15 +58,6 @@ def format_thai_datetime(dt):
     year = dt.year + 543
     month = thai_months[dt.month]
     return f"{dt.day} {month} {year} เวลา {dt.strftime('%H:%M')} น."
-
-def format_date_only(date_str):
-    if not date_str: return "ไม่ระบุ"
-    try:
-        dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-        thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
-                       "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-        return f"{dt.day} {thai_months[dt.month]} {dt.year + 543}"
-    except: return date_str
 
 def get_wind_category(speed_ms):
     if speed_ms is None: return "ไม่ทราบเกณฑ์ลม"
@@ -130,56 +119,6 @@ def find_nearest_weather(lat, lon, tmd_features):
             
     return weather
 
-def get_hotspot_stats(province_name):
-    url = "https://api-gateway.gistda.or.th/api/2.0/resources/features/viirs/3days"
-    params = {"limit": 5000, "offset": 0, "ct_tn": "ราชอาณาจักรไทย"}
-    headers = {'accept': 'application/json', 'API-Key': GISTDA_KEY}
-    
-    clean_prov = province_name.replace('จ.', '').replace('จังหวัด', '').strip()
-    if clean_prov == "กรุงเทพฯ": clean_prov = "กรุงเทพมหานคร"
-    
-    result = {
-        "error": False, "province": clean_prov, "latest_date": "",
-        "1day": {"count": 0, "landuse": {}}, "3days": {"count": 0, "landuse": {}}
-    }
-    
-    try:
-        res = requests.get(url, headers=headers, params=params, timeout=30)
-        res.raise_for_status() 
-        features = res.json().get('features', [])
-        
-        all_dates = [f.get('properties', {}).get('acq_date', '').split('T')[0] for f in features if f.get('properties', {}).get('acq_date')]
-        if all_dates:
-            result['latest_date'] = max(all_dates)
-        else:
-            now = datetime.datetime.now(TIMEZONE)
-            result['latest_date'] = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-
-        target_date = result['latest_date']
-
-        for f in features:
-            props = f.get('properties', {})
-            pv_tn = props.get('pv_tn', '')
-            if pv_tn and clean_prov in pv_tn:
-                acq_date_full = props.get('acq_date', '')
-                if not acq_date_full: continue
-                
-                f_date = acq_date_full.split('T')[0]
-                lu = props.get('lu_hp_name') or props.get('lu_name') or 'ไม่ระบุ'
-                
-                result["3days"]["count"] += 1
-                result["3days"]["landuse"][lu] = result["3days"]["landuse"].get(lu, 0) + 1
-                
-                if f_date == target_date:
-                    result["1day"]["count"] += 1
-                    result["1day"]["landuse"][lu] = result["1day"]["landuse"].get(lu, 0) + 1
-
-    except Exception as e:
-        print(f"GISTDA API Error: {e}")
-        result["error"] = True
-
-    return result
-
 def analyze_station_integrity(s_id):
     now = datetime.datetime.now(TIMEZONE)
     edate = now.strftime("%Y-%m-%d")
@@ -216,10 +155,10 @@ def analyze_station_integrity(s_id):
 
 def analyze_situation(integrity_status):
     if integrity_status == "ข้อมูลตรวจวัดอยู่ในเกณฑ์ปกติ":
-        return "ยืนยันข้อมูลปกติ เบื้องต้นระบบตรวจวัดทำงานสมบูรณ์"
+        return "**ยืนยันระบบตรวจวัดทำงานปกติ**"
     else:
         issues = integrity_status.replace("พบความผิดปกติ: ", "")
-        return f"เบื้องต้นข้อมูลตรวจวัดมีความเสี่ยงผิดปกติ ({issues}) เจ้าหน้าที่ตรวจสอบแล้ว ยืนยันเครื่องมือทำงานปกติ"
+        return f"เบื้องต้นข้อมูลตรวจวัดมีความเสี่ยงผิดปกติ ({issues}) **เจ้าหน้าที่ตรวจสอบแล้ว ยืนยันเครื่องมือทำงานปกติ**"
 
 def load_log():
     if os.path.exists(LOG_FILE):
@@ -261,7 +200,6 @@ def generate_executive_summary(all_stations, date_formatted):
         items_sorted = sorted(items, key=lambda x: x['stats']['now'], reverse=True)
         summary += f"\n📁 **{region}** (จำนวน {len(items)} สถานี)\n"
         
-        # Weather stats
         temps = [i['weather']['temp'] for i in items_sorted if i['weather']['temp'] is not None]
         winds = [i['weather']['wind_spd'] for i in items_sorted if i['weather']['wind_spd'] is not None]
         dirs = [i['weather']['wind_dir'] for i in items_sorted if i['weather']['wind_dir']]
@@ -277,13 +215,16 @@ def generate_executive_summary(all_stations, date_formatted):
         
         wind_cat = get_wind_category(avg_wind)
         
-        weather_str = f"อุณหภูมิเฉลี่ย {avg_temp:.1f}°C, ทิศทางลมหลักพัดจาก{common_dir}, ความเร็วลมเฉลี่ย: {wind_cat} ({avg_wind:.1f} m/s)"
+        if avg_wind < 0.5:
+            weather_str = f"อุณหภูมิเฉลี่ย {avg_temp:.1f}°C, ทิศทางลมหลักพัดจาก{common_dir}, ความเร็วลมเฉลี่ย: ลมสงบ"
+        else:
+            weather_str = f"อุณหภูมิเฉลี่ย {avg_temp:.1f}°C, ทิศทางลมหลักพัดจาก{common_dir}, ความเร็วลมเฉลี่ย: {wind_cat} ({avg_wind:.1f} m/s)"
+            
         if has_rain:
             weather_str += " และมีรายงานฝนตกบางพื้นที่"
             
         summary += f"🌦️ สภาพอากาศภาพรวม: {weather_str}\n"
         
-        # Machine stats
         normal_count = 0
         abnormal_details = []
         for i in items_sorted:
@@ -296,7 +237,7 @@ def generate_executive_summary(all_stations, date_formatted):
                 
         abnormal_count = len(items_sorted) - normal_count
         if abnormal_count == 0:
-            summary += f"📝 สถานะเครื่องตรวจวัด: ยืนยันระบบตรวจวัดทำงานปกติทุกสถานี\n"
+            summary += f"📝 สถานะเครื่องตรวจวัด: **ยืนยันระบบตรวจวัดทำงานปกติทุกสถานี**\n"
         else:
             issue_counts = {}
             for detail in abnormal_details:
@@ -304,14 +245,13 @@ def generate_executive_summary(all_stations, date_formatted):
                 for p in parts:
                     issue_counts[p] = issue_counts.get(p, 0) + 1
             issue_str = ", ".join([f"{k} {v} สถานี" for k, v in issue_counts.items()])
-            summary += f"📝 สถานะเครื่องตรวจวัด: ทำงานปกติ {normal_count} สถานี, พบความเสี่ยง ({issue_str}) เจ้าหน้าที่ตรวจสอบแล้ว ยืนยันเครื่องมือทำงานปกติทุกสถานี\n"
+            summary += f"📝 สถานะเครื่องตรวจวัด: ทำงานปกติ {normal_count} สถานี, พบความเสี่ยง ({issue_str}) **เจ้าหน้าที่ตรวจสอบแล้ว ยืนยันเครื่องมือทำงานปกติทุกสถานี**\n"
         
         summary += f"📍 รายชื่อสถานี (เรียงตามค่าเฉลี่ย 24 ชม. จากมากไปน้อย):\n"
         for idx, item in enumerate(items_sorted, 1):
             s = item['info']
             st = item['stats']
             
-            # Extract Amphoe
             area_parts = s['areaTH'].split(',')
             if len(area_parts) >= 3:
                 amphoe = area_parts[-2].strip()
@@ -327,7 +267,6 @@ def generate_executive_summary(all_stations, date_formatted):
             summary += f"  {idx}. [{s['stationID']}] {s['nameTH']} {amphoe} จ.{item['province']}\n"
             summary += f"      ↳ เฉลี่ย 24 ชม.: {st['now']} | รายชั่วโมงสูงสุด: {max_1hr} µg/m³\n"
     
-    # OVERALL CONCLUSION
     avg_nat_temp = sum(nat_temps)/len(nat_temps) if nat_temps else 0
     avg_nat_wind = sum(nat_winds)/len(nat_winds) if nat_winds else 0
     nat_wind_cat = get_wind_category(avg_nat_wind)
@@ -335,14 +274,22 @@ def generate_executive_summary(all_stations, date_formatted):
     summary += "\n" + "="*32 + "\n"
     summary += "📌 **สรุปแนวโน้มสถานการณ์ภาพรวม**\n"
     summary += f"• **สถานการณ์ฝุ่น:** พบพื้นที่เฝ้าระวังระดับวิกฤต (สีแดง) รวมทั้งสิ้น {total_stations} สถานี แนะนำให้ติดตามสถานการณ์อย่างใกล้ชิด\n"
-    summary += f"• **สภาพอากาศภาพรวม:** อุณหภูมิเฉลี่ย {avg_nat_temp:.1f}°C สภาพลมโดยเฉลี่ยอยู่ในเกณฑ์{nat_wind_cat} ({avg_nat_wind:.1f} m/s) ซึ่งลมนิ่ง/ลมอ่อนเป็นปัจจัยเสริมให้เกิดการสะสมของฝุ่น\n"
+    if avg_nat_wind < 0.5:
+        summary += f"• **สภาพอากาศภาพรวม:** อุณหภูมิเฉลี่ย {avg_nat_temp:.1f}°C สภาพลมโดยเฉลี่ยอยู่ในเกณฑ์ลมสงบ ซึ่งเป็นปัจจัยเสริมให้เกิดการสะสมของฝุ่นละออง\n"
+    else:
+        summary += f"• **สภาพอากาศภาพรวม:** อุณหภูมิเฉลี่ย {avg_nat_temp:.1f}°C สภาพลมโดยเฉลี่ยอยู่ในเกณฑ์{nat_wind_cat} ({avg_nat_wind:.1f} m/s) ซึ่งลมนิ่ง/ลมอ่อนเป็นปัจจัยเสริมให้เกิดการสะสมของฝุ่น\n"
     summary += "• **สถานะระบบตรวจวัด:** เครื่องมือทำงานตามปกติและสามารถเชื่อถือได้ทุกสถานีตรวจวัดฯ\n"
 
     return summary
 
 def main():
     now = datetime.datetime.now(TIMEZONE)
-    today_str = now.strftime("%Y-%m-%d")
+    
+    # --- Logic: Reset Log ณ เวลา 06.00 น. ---
+    # ปรับเวลาถอยหลัง 6 ชม. เพื่อให้การเปลี่ยนวันที่ใน Log เกิดขึ้นตอน 06.00 น.
+    report_day = (now - datetime.timedelta(hours=6)).date()
+    today_str = report_day.strftime("%Y-%m-%d")
+    
     date_formatted = format_thai_datetime(now)
     
     history = load_log()
@@ -372,7 +319,6 @@ def main():
             lat, lon = float(s['lat']), float(s['long'])
             integrity_status, v_range = analyze_station_integrity(s_id)
             weather = find_nearest_weather(lat, lon, tmd_features)
-            hotspot_stats = get_hotspot_stats(s['areaTH'].split(',')[-1].strip())
             analysis = analyze_situation(integrity_status)
 
             prov = s['areaTH'].split(',')[-1].strip().replace('จ.', '').replace('จังหวัด', '').strip()
@@ -384,7 +330,6 @@ def main():
                 "region": get_region(prov),
                 "stats": {"now": pm25_now, "range": v_range, "status": integrity_status},
                 "weather": weather,
-                "hotspot": hotspot_stats,
                 "analysis": analysis
             })
 
@@ -407,7 +352,6 @@ def main():
         messages_to_send = []
         current_msg = header_msg
         
-        # ส่วนที่ 1: แจ้งเตือนรายสถานี (แบ่งภาค)
         for region, items in grouped_stations.items():
             region_header = f"\n📁 *{region}*\n================================\n"
             current_msg += region_header
@@ -416,7 +360,6 @@ def main():
                 s = item['info']
                 st = item['stats']
                 w = item['weather']
-                h = item['hotspot']
                 
                 new_tag = "🆕 " if s['stationID'] in [n['info']['stationID'] for n in new_stations] else ""
                 aqi = calculate_thai_aqi(st['now'])
@@ -447,29 +390,7 @@ def main():
                 else: 
                     w_text += "• ข้อมูลลม: ไม่พบข้อมูลอุตุนิยมวิทยาในพื้นที่ใกล้เคียง\n"
                 
-                block_text += w_text
-                
-                h_text = "🔥 4. ข้อมูลจุดความร้อนเบื้องต้น (GISTDA)\n"
-                if h.get('error'):
-                    h_text += "  • ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลจุดความร้อนมาแสดงได้\n"
-                else:
-                    date_str = format_date_only(h['latest_date'])
-                    h_text += f"  • จังหวัด{h['province']} (ข้อมูลวันที่ {date_str})\n"
-                    h_text += f"  📍 [สะสม 24 ชั่วโมงล่าสุด] พบ {h['1day']['count']} จุด\n"
-                    if h['1day']['count'] > 0:
-                        sorted_lu1 = sorted(h['1day']['landuse'].items(), key=lambda item: item[1], reverse=True)
-                        for lu, c in sorted_lu1:
-                            h_text += f"       - {lu}: {c} จุด\n"
-                    
-                    h_text = h_text.rstrip() + "\n"
-                            
-                    h_text += f"  📍 [สะสม 3 วันย้อนหลัง] พบ {h['3days']['count']} จุด"
-                    if h['3days']['count'] > 0:
-                        sorted_lu3 = sorted(h['3days']['landuse'].items(), key=lambda item: item[1], reverse=True)
-                        for lu, c in sorted_lu3:
-                            h_text += f"\n       - {lu}: {c} จุด"
-                
-                block_text += h_text + "\n--------------------------------\n"
+                block_text += w_text + "--------------------------------\n"
                 
                 if len(current_msg) + len(block_text) > 4000:
                     messages_to_send.append(current_msg)
@@ -480,7 +401,6 @@ def main():
         if current_msg:
             messages_to_send.append(current_msg)
             
-        # ส่วนที่ 2: สรุปผู้บริหาร (กล่องข้อความสุดท้าย)
         exec_summary_text = generate_executive_summary(current_red_stations, date_formatted)
         if exec_summary_text:
             if len(messages_to_send[-1]) + len(exec_summary_text) > 4000:
@@ -509,7 +429,7 @@ def main():
         else:
             print("คำเตือน: ส่งข้อมูลไม่ครบถ้วน อาจมีปัญหาจากฝั่ง LINE API")
     else:
-        print("ไม่มีสถานีแจ้งเตือนใหม่ (และยังไม่มีสถานีเก่ากลับมาแดง)")
+        print("ไม่มีสถานีแจ้งเตือนใหม่")
         with open(LOG_FILE, 'w') as f:
             json.dump(history, f)
 
