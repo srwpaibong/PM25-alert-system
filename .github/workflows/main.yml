@@ -12,9 +12,9 @@ permissions:
 jobs:
   report:
     runs-on: ubuntu-latest
-    # เพิ่มส่วนนี้เพื่อบังคับให้ใช้ Node.js 24 และลบ Warning ออก
+    # ปรับส่วนนี้เพื่ออนุญาตให้ใช้ Node.js 20 ต่อไปได้โดยไม่เกิดข้อผิดพลาดในการรัน
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       
     steps:
       - name: Checkout Code
