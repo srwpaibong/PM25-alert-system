@@ -1,39 +1,41 @@
-name: PM25-Automation
+name: Air Quality Daily & Real-time Alert
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # รันทุก 30 นาที
-  workflow_dispatch:        # ให้กดรันเองได้ด้วย
+    # รันทุกๆ 20 นาที (*/20)
+    - cron: '*/20 * * * *'
+  workflow_dispatch: 
+
+permissions:
+  contents: write
 
 jobs:
-  run-bot:
+  report:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install Libraries
-        run: pip install -r requirements.txt
+      - name: Install Dependencies
+        run: pip install requests pytz pandas
 
-      - name: Run Bot
+      - name: Run Bot Script
         env:
-          LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
-          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           AIR4THAI_KEY: ${{ secrets.AIR4THAI_KEY }}
+          TMD_DAILY_KEY: ${{ secrets.TMD_DAILY_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
         run: python bot.py
 
-      - name: Update GitHub with Graphs and Log
+      - name: Save Alert History
         run: |
-          git config --global user.name 'AirQualityBot'
-          git config --global user.email 'bot@github.com'
-          git add log.json
-          git commit -m "Update graphs and log" || echo "No changes"
-          git pull origin main --rebase --autostash
-          git push origin main
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add critical_history.json || true
+          git commit -m "Update critical status history [skip ci]" || true
+          git push || true
