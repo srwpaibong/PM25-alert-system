@@ -2,7 +2,7 @@ name: Air Quality Daily & Real-time Alert
 
 on:
   schedule:
-    # รันทุกๆ 20 นาที (*/20)
+    # รันทุกๆ 20 นาที
     - cron: '*/20 * * * *'
   workflow_dispatch: 
 
@@ -12,6 +12,10 @@ permissions:
 jobs:
   report:
     runs-on: ubuntu-latest
+    # เพิ่มส่วนนี้เพื่อบังคับให้ใช้ Node.js 24 และลบ Warning ออก
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
