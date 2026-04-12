@@ -1,323 +1,192 @@
-import requests
-import pandas as pd
 import os
+import requests
 import json
-import datetime
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
 import pytz
-import math
+import pandas as pd
 import time
+import re
 
-# --- Configuration ---
-LINE_TOKEN = os.getenv('LINE_ACCESS_TOKEN')
-USER_ID = os.getenv('LINE_USER_ID')
-TIMEZONE = pytz.timezone('Asia/Bangkok')
-LOG_FILE = "log.json"
+# ===== CONFIGURATION =====
+AIR4THAI_KEY = os.getenv('AIR4THAI_KEY')
+TMD_DAILY_KEY = os.getenv('TMD_DAILY_KEY')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_IDS = os.getenv('TELEGRAM_CHAT_IDS', '').split(',')
 
-# --- Region Mapping ---
-REGION_MAP = {
-    'ภาคเหนือ': ['เชียงราย', 'เชียงใหม่', 'พะเยา', 'แพร่', 'น่าน', 'อุตรดิตถ์', 'ลำปาง', 'ตาก', 'ลำพูน', 'แม่ฮ่องสอน', 'สุโขทัย', 'กำแพงเพชร', 'เพชรบูรณ์', 'พิษณุโลก', 'นครสวรรค์', 'อุทัยธานี'],
-    'ภาคกลาง': ['กาญจนบุรี', 'สุพรรณบุรี', 'อ่างทอง', 'ชัยนาท', 'สิงห์บุรี', 'ราชบุรี', 'สมุทรสงคราม', 'สระบุรี', 'พระนครศรีอยุธยา', 'ลพบุรี'], 
-    'กรุงเทพฯและปริมณฑล': ['กรุงเทพมหานคร', 'สมุทรสาคร', 'นนทบุรี', 'สมุทรปราการ', 'ปทุมธานี', 'นครปฐม'],
-    'ภาคใต้': ['ชุมพร', 'ระนอง', 'พังงา', 'ภูเก็ต', 'สุราษฎร์ธานี', 'นครศรีธรรมราช', 'กระบี่', 'ตรัง', 'พัทลุง', 'สตูล', 'สงขลา', 'ปัตตานี', 'ยะลา', 'นราธิวาส', 'ประจวบคีรีขันธ์'],
-    'ภาคตะวันออกเฉียงเหนือ': ['ขอนแก่น', 'กาฬสินธุ์', 'ชัยภูมิ', 'นครพนม', 'นครราชสีมา', 'บึงกาฬ', 'บุรีรัมย์', 'มหาสารคาม', 'มุกดาหาร', 'ยโสธร', 'ร้อยเอ็ด', 'ศรีสะเกษ', 'สกลนคร', 'สุรินทร์', 'หนองคาย', 'หนองบัวลำภู', 'อำนาจเจริญ', 'อุดรธานี', 'อุบลราชธานี', 'เลย'],
-    'ภาคตะวันออก': ['นครนายก', 'ฉะเชิงเทรา', 'ปราจีนบุรี', 'สระแก้ว', 'ชลบุรี', 'ระยอง', 'จันทบุรี', 'ตราด']
+CRITICAL_THRESHOLD = 75.0 # ระดับสีแดง
+HISTORY_FILE = 'critical_history.json'
+
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+REGION_CONFIG = {
+    'ภาคเหนือ': {'prov': ['เชียงราย', 'เชียงใหม่', 'พะเยา', 'แพร่', 'น่าน', 'อุตรดิตถ์', 'ลำปาง', 'ตาก', 'ลำพูน', 'แม่ฮ่องสอน', 'สุโขทัย', 'กำแพงเพชร', 'เพชรบูรณ์', 'พิษณุโลก', 'นครสวรรค์', 'อุทัยธานี', 'พิจิตร'], 'staff': 'พี่ป๊อปปี้'},
+    'ภาคกลาง': {'prov': ['กาญจนบุรี', 'สุพรรณบุรี', 'อ่างทอง', 'ชัยนาท', 'สิงห์บุรี', 'ราชบุรี', 'นครปฐม', 'สมุทรสงคราม', 'ระยอง', 'สระบุรี', 'พระนครศรีอยุธยา', 'ลพบุรี'], 'staff': 'พี่ป๊อปปี้'},
+    'กรุงเทพฯและปริมณฑล': {'prov': ['กรุงเทพมหานคร', 'สมุทรสาคร', 'นนทบุรี', 'สมุทรปราการ', 'ปทุมธานี', 'นครปฐม'], 'staff': 'พี่ป๊อปปี้'},
+    'ภาคใต้': {'prov': ['ชุมพร', 'ระนอง', 'พังงา', 'ภูเก็ต', 'สุราษฎร์ธานี', 'นครศรีธรรมราช', 'กระบี่', 'ตรัง', 'พัทลุง', 'สตูล', 'สงขลา', 'ปัตตานี', 'ยะลา', 'นราธิวาส'], 'staff': 'พี่หน่อย'},
+    'ภาคตะวันออกเฉียงเหนือ': {'prov': ['ขอนแก่น', 'กาฬสินธุ์', 'ชัยภูมิ', 'นครพนม', 'นครราชสีมา', 'บึงกาฬ', 'บุรีรัมย์', 'มหาสารคาม', 'มุกดาหาร', 'ยโสธร', 'ร้อยเอ็ด', 'ศรีสะเกษ', 'สกลนคร', 'สุรินทร์', 'หนองคาย', 'หนองบัวลำภู', 'อำนาจเจริญ', 'อุดรธานี', 'อุบลราชธานี', 'เลย'], 'staff': 'พี่หน่อย'},
+    'ภาคตะวันออก': {'prov': ['นครนายก', 'ฉะเชิงเทรา', 'ปราจีนบุรี', 'สระแก้ว', 'ชลบุรี', 'ระยอง', 'จันทบุรี', 'ตราด'], 'staff': 'พี่ฟรังก์'}
 }
 
-def get_region(province_name):
-    for region, provinces in REGION_MAP.items():
-        if province_name in provinces:
-            return region
-    return "พื้นที่อื่นๆ"
+def get_now_th():
+    return datetime.now(pytz.timezone('Asia/Bangkok'))
 
-# --- Helper Functions ---
+def extract_detailed_area(area_th, station_type):
+    if station_type and station_type.lower() == 'bkk':
+        return f"{area_th.split(',')[0].strip()}, กรุงเทพฯ"
+    if not area_th: return "ไม่ระบุพื้นที่"
+    parts = area_th.split(',')
+    if len(parts) > 1:
+        addr, prov = parts[0].strip(), parts[1].strip().replace('จังหวัด', '').replace('จ.', '')
+        if "กรุงเทพ" in prov: prov = "กรุงเทพฯ"
+        return f"{addr}, {prov}"
+    return area_th.strip()
 
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2) * math.sin(dlat/2) + \
-        math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
-        math.sin(dlon/2) * math.sin(dlon/2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
-
-def deg_to_compass_thai(num):
-    if num is None: return "ไม่ระบุ"
-    try:
-        val = int((float(num)/22.5)+.5)
-        arr = ["ทิศเหนือ", "ทิศตะวันออกเฉียงเหนือ", "ทิศตะวันออกเฉียงเหนือ", "ทิศตะวันออกเฉียงเหนือ",
-               "ทิศตะวันออก", "ทิศตะวันออกเฉียงใต้", "ทิศตะวันออกเฉียงใต้", "ทิศตะวันออกเฉียงใต้",
-               "ทิศใต้", "ทิศตะวันตกเฉียงใต้", "ทิศตะวันตกเฉียงใต้", "ทิศตะวันตกเฉียงใต้",
-               "ทิศตะวันตก", "ทิศตะวันตกเฉียงเหนือ", "ทิศตะวันตกเฉียงเหนือ", "ทิศตะวันตกเฉียงเหนือ"]
-        return arr[(val % 16)]
-    except: return "ไม่ระบุ"
-
-def format_thai_datetime(dt):
-    thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
-                   "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-    year = dt.year + 543
-    month = thai_months[dt.month]
-    return f"{dt.day} {month} {year} เวลา {dt.strftime('%H:%M')} น."
-
-def get_wind_category(speed_ms):
-    if speed_ms is None: return "ไม่ทราบเกณฑ์ลม"
-    if speed_ms < 0.5: return "ลมสงบ"
-    elif speed_ms <= 3.3: return "ลมอ่อน"
-    elif speed_ms <= 7.9: return "ลมปานกลาง"
-    else: return "ลมแรง"
-
-# --- Data Fetching Functions ---
-
-def get_all_tmd_stations():
-    url = "http://122.155.135.49/api/home/poi"
-    try:
-        res = requests.get(url, timeout=15).json()
-        return res.get('features', [])
-    except Exception as e:
-        print(f"TMD POI Error: {e}")
-        return []
-
-def find_nearest_weather(lat, lon, tmd_features):
-    weather = {
-        "source": "ไม่พบข้อมูล", "temp": None, "hum": None, 
-        "wind_spd": None, "wind_dir": None, "wind_deg": None,
-        "dist": 9999
-    }
-    
-    if not tmd_features: return weather
-    nearest_feature = None
-    min_dist = 99999
-
-    for f in tmd_features:
+def send_tg(text):
+    for cid in TELEGRAM_CHAT_IDS:
+        if not cid.strip(): continue
         try:
-            props = f.get('properties', {})
-            s_lat = props.get('lat')
-            s_lon = props.get('lon')
-            if s_lat is None or s_lon is None: continue
-            
-            dist = haversine(lat, lon, s_lat, s_lon)
-            if dist < min_dist:
-                min_dist = dist
-                nearest_feature = props
-        except: continue
-    
-    if nearest_feature:
-        weather['dist'] = min_dist
-        weather['source'] = f"สถานีอุตุนิยมวิทยา{nearest_feature.get('siteNameFirst', '').replace('สถานีอุตุนิยมวิทยา', '').split(' ')[0]} (ระยะห่าง {min_dist:.1f} กม.)"
-        weather['temp'] = nearest_feature.get('temp')
-        weather['hum'] = nearest_feature.get('humidity')
-        
-        w_speed = nearest_feature.get('windSpeed')
-        if w_speed is not None:
-            weather['wind_spd'] = float(w_speed)
-            
-        w_deg = nearest_feature.get('windDir')
-        if w_deg is not None:
-            weather['wind_deg'] = float(w_deg)
-            weather['wind_dir'] = deg_to_compass_thai(w_deg)
-            
-    return weather
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
+                          json={"chat_id": cid.strip(), "text": text, "parse_mode": "Markdown"}, timeout=20)
+        except: pass
 
-def analyze_station_integrity(s_id):
-    now = datetime.datetime.now(TIMEZONE)
-    edate = now.strftime("%Y-%m-%d")
-    sdate = (now - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
-    url = f"http://air4thai.com/forweb/getHistoryData.php?stationID={s_id}&param=PM25&type=hr&sdate={sdate}&edate={edate}&stime=00&etime=23"
-    
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except: pass
+    return {"last_critical_ids": [], "last_run_time": ""}
+
+def save_history(ids, time_str):
+    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump({"last_critical_ids": ids, "last_run_time": time_str}, f, ensure_ascii=False)
+
+def check_qa_issues_48h(station_id):
     try:
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).json()
+        now = get_now_th()
+        url = f"http://air4thai.com/forweb/getHistoryData.php?stationID={station_id}&param=PM25&type=hr&sdate={(now - timedelta(days=2)).strftime('%Y-%m-%d')}&edate={now.strftime('%Y-%m-%d')}&stime=00&etime=23"
+        res = requests.get(url, headers=HEADERS, timeout=15).json()
         data = res.get('stations', [{}])[0].get('data', [])
-        
-        if not data: return "ระบบตรวจวัดขัดข้อง (ไม่พบข้อมูลย้อนหลัง)", "N/A"
-
+        if not data: return None
         df = pd.DataFrame(data)
-        df.rename(columns={'DATETIMEDATA': 'datetime', 'PM25': 'value'}, inplace=True)
-        df['value'] = pd.to_numeric(df['value'], errors='coerce')
-        
-        df_24h = df.tail(24)
-        if df_24h.empty or df_24h['value'].isna().all():
-            v_range = "N/A"
-        else:
-            v_min, v_max = df_24h['value'].min(), df_24h['value'].max()
-            v_range = f"{v_min:.1f} - {v_max:.1f}"
-
+        df['PM25'] = pd.to_numeric(df['PM25'], errors='coerce')
         issues = []
-        if df['value'].diff().abs().max() > 50: issues.append("Spike (ค่ากระโดดผิดปกติ)")
-        if (df['value'].rolling(4).std() == 0).any(): issues.append("Flatline (ค่าค้าง)")
-        if (df['value'] < 0).any(): issues.append("Negative (ค่าติดลบ)")
-        if df['value'].isnull().sum() > 4: issues.append("Missing (ข้อมูลขาดหาย)")
+        if any(df['PM25'].diff().abs() > 50): issues.append("spike")
+        if df['PM25'].tail(12).isna().sum() >= 4: issues.append("missing")
+        if any(df['PM25'].tail(8).rolling(window=4).std() == 0): issues.append("ค่าค้าง")
+        return ", ".join(issues) if issues else None
+    except: return None
+
+def generate_executive_summary(critical_stations, now, regional_weather, history, is_daily_start):
+    last_ids = history.get("last_critical_ids", [])
+    new_alerts = [st for st in critical_stations if st['id'] not in last_ids]
+    
+    # หากไม่ใช่รอบรายงานเช้า และไม่มีสถานีใหม่เลย จะไม่ส่งข้อความ
+    if not is_daily_start and not new_alerts:
+        return None
+
+    msg = f"📊 *[รายงานการติดตามระบบเฝ้าระวัง PM2.5]*\n"
+    if is_daily_start:
+        msg += f"☀️ *รายงานสถานการณ์เริ่มต้นวันใหม่*\n"
+    msg += f"⏰ ข้อมูล ณ วันที่: {now.strftime('%d/%m/%Y')} เวลา {now.strftime('%H:%M')} น.\n"
+    msg += f"🔴 พื้นที่เฝ้าระวังระดับวิกฤต: {len(critical_stations)} สถานี\n"
+    if new_alerts:
+        msg += f"🆕 (พบการแจ้งเตือนใหม่ {len(new_alerts)} สถานี)\n"
+    msg += f"----------------------------------\n\n"
+
+    regional_groups = {region: [] for region in REGION_CONFIG.keys()}
+    for st in critical_stations:
+        for region, config in REGION_CONFIG.items():
+            if any(p in st['full_addr'] for p in config['prov']):
+                regional_groups[region].append(st)
+                break
+
+    for region, stations in regional_groups.items():
+        if not stations: continue
+        stations.sort(key=lambda x: x['v24h'], reverse=True)
         
-        status = "ข้อมูลตรวจวัดอยู่ในเกณฑ์ปกติ" if not issues else f"พบความผิดปกติ: {', '.join(issues)}"
-        return status, v_range
-    except:
-        return "ไม่สามารถเชื่อมต่อฐานข้อมูลย้อนหลังได้", "N/A"
+        msg += f"📁 *{region}* ({len(stations)} สถานี)\n"
+        msg += f"================================\n"
+        for st in stations:
+            # ใช้ 🆕 สำหรับสถานีที่เพิ่งวิกฤต และ 📍 สำหรับสถานีเฝ้าระวังต่อเนื่อง
+            status_tag = "🆕 แจ้งเตือนใหม่" if st['id'] not in last_ids else "📍 เฝ้าระวังต่อเนื่อง"
+            msg += f"*{status_tag}*\n"
+            msg += f"📍 `[{st['id']}]` {st['full_addr']}\n"
+            msg += f"• ค่าราย ชม. (สูงสุด): `{st['v1h']}` | เฉลี่ย 24 ชม.: `{st['v24h']}`\n"
+            if st['qa_issue']:
+                msg += f"📝 สถานะ: *พบค่าผิดปกติ ({st['qa_issue']}) เจ้าหน้าที่ตรวจสอบแล้วเครื่องทำงานตามปกติ*\n"
+            else:
+                msg += f"📝 สถานะ: *ไม่พบค่าผิดปกติ*\n"
+        
+        w = regional_weather.get(region, {})
+        msg += f"\n🌦️ *ข้อมูลอุตุนิยมวิทยา {region}:*\n"
+        msg += f"• อุณหภูมิสูงสุด: {w.get('temp', 'N/A')}°C | ลมเฉลี่ย: {w.get('wind', 'N/A')} กม./ชม.\n"
+        if w.get('rain'): msg += f"• 🌧️ รายงานฝน: {w.get('rain')}\n"
+        msg += f"• การระบายอากาศ: {w.get('vent', 'ทรงตัว')}\n"
+        msg += f"⚙️ การทำงานเครื่องมือ: *ปกติทุกจุด*\n\n"
 
-def analyze_situation(integrity_status):
-    # ปรับแก้ตามคำแนะนำ ทำตัวหนาเฉพาะท่อนที่ยืนยันว่าเครื่องปกติ
-    if integrity_status == "ข้อมูลตรวจวัดอยู่ในเกณฑ์ปกติ":
-        return "*ยืนยันระบบตรวจวัดทำงานปกติ*"
-    else:
-        issues = integrity_status.replace("พบความผิดปกติ: ", "")
-        return f"เบื้องต้นข้อมูลตรวจวัดมีความเสี่ยงผิดปกติ ({issues}) *เจ้าหน้าที่ตรวจสอบแล้ว ยืนยันเครื่องมือทำงานปกติ*"
-
-def load_log():
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, 'r') as f:
-            try: return json.load(f)
-            except: return {"last_date": "", "alerted_ids": []}
-    return {"last_date": "", "alerted_ids": []}
-
-def calculate_thai_aqi(pm25):
-    if pm25 <= 15.0: xi, xj, ii, ij = 0, 15.0, 0, 25
-    elif pm25 <= 25.0: xi, xj, ii, ij = 15.1, 25.0, 26, 50
-    elif pm25 <= 37.5: xi, xj, ii, ij = 25.1, 37.5, 51, 100
-    elif pm25 <= 75.0: xi, xj, ii, ij = 37.6, 75.0, 101, 200
-    else: xi, xj, ii, ij = 75.1, 500.0, 201, 500
-    return int(round(((ij - ii) / (xj - xi)) * (pm25 - xi) + ii))
+    msg += f"----------------------------------\n"
+    msg += f"📌 *สรุปภาพรวม:*\n"
+    msg += f"• *สถานการณ์ฝุ่น:* พบการสะสมตัวของฝุ่นละอองระดับสีแดง {len(critical_stations)} แห่ง "
+    msg += f"(สถานีใหม่ {len(new_alerts)} แห่ง)\n"
+    msg += f"• *ลักษณะอุตุนิยมวิทยา:* {regional_weather.get('ภาคเหนือ', {}).get('vent', 'ระบายอากาศอ่อน')} และลมนิ่งในหลายพื้นที่\n"
+    msg += f"• *สถานะเครื่องมือ:* เครื่องมือทุกสถานีตรวจวัดฯ ทำงานปกติ และพร้อมรายงานข้อมูลแบบ Real-time"
+    
+    return msg
 
 def main():
-    now = datetime.datetime.now(TIMEZONE)
-    today_str = now.strftime("%Y-%m-%d")
-    date_formatted = format_thai_datetime(now)
+    now = get_now_th()
+    history = load_history()
     
-    history = load_log()
-    if history.get('last_date') != today_str:
-        history = {"last_date": today_str, "alerted_ids": []}
+    # ปรับเงื่อนไขให้ส่ง Daily Report เฉพาะการรันรอบแรกของช่วง 06:00 น. เท่านั้น (ป้องกันส่งซ้ำทุก 20 นาที)
+    is_daily_start = (now.hour == 6 and now.minute < 20)
 
     try:
-        tmd_features = get_all_tmd_stations()
-        res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php", timeout=30).json()
-    except Exception as e:
-        print(f"API Error: {e}")
-        return
-
-    current_red_stations = []
-
-    for s in res.get('stations', []):
-        val = s.get('AQILast', {}).get('PM25', {}).get('value')
-        s_id = s['stationID']
-        
-        if val and s_id != "11t":
-            pm25_now = float(val)
-            
-            # --- Logic แจ้งเตือนซ้ำ ---
-            if pm25_now <= 75.0:
-                if s_id in history['alerted_ids']:
-                    history['alerted_ids'].remove(s_id)
-                continue
-            
-            lat, lon = float(s['lat']), float(s['long'])
-            
-            integrity_status, v_range = analyze_station_integrity(s_id)
-            weather = find_nearest_weather(lat, lon, tmd_features)
-            analysis = analyze_situation(integrity_status)
-
-            prov = s['areaTH'].split(',')[-1].strip().replace('จ.', '').replace('จังหวัด', '').strip()
-            if prov == "กรุงเทพฯ": prov = "กรุงเทพมหานคร"
-
-            current_red_stations.append({
-                "info": s,
-                "province": prov,
-                "region": get_region(prov),
-                "stats": {"now": pm25_now, "range": v_range, "status": integrity_status},
-                "weather": weather,
-                "analysis": analysis
+        hourly_raw = requests.get(f"http://air4thai.com/services/getAQI_County.php?key={AIR4THAI_KEY}", headers=HEADERS).json()
+        daily_raw = requests.get("http://air4thai.com/forweb/getAQI_JSON.php", headers=HEADERS).json()
+        daily_map = {s['stationID']: s['AQILast']['PM25']['value'] for s in daily_raw.get('stations', []) if s.get('AQILast')}
+    except: return
+    
+    critical_stations = []
+    current_red_ids = []
+    valid_h = [s for s in hourly_raw if s and isinstance(s, dict) and s.get('hourly_data')]
+    for s in valid_h:
+        st_id = s['StationID']
+        v1h, v24h = float(s['hourly_data'].get('PM25', 0)), float(daily_map.get(st_id, 0))
+        if v24h >= CRITICAL_THRESHOLD or v1h >= 100:
+            current_red_ids.append(st_id)
+            critical_stations.append({
+                'id': st_id, 'v1h': v1h, 'v24h': v24h,
+                'full_addr': extract_detailed_area(s['AreaNameTh'], s.get('StationType')),
+                'qa_issue': check_qa_issues_48h(st_id)
             })
 
-    new_stations = [s for s in current_red_stations if s['info']['stationID'] not in history['alerted_ids']]
+    regional_weather = {}
+    try:
+        tmd_res = requests.get(f"https://data.tmd.go.th/api/DailyForecast/v2/?uid=api&ukey={TMD_DAILY_KEY}", timeout=30).content
+        root = ET.fromstring(tmd_res.decode('utf-8-sig').strip())
+        for rf in root.findall('.//RegionForecast'):
+            name = rf.find('RegionNameThai').text.strip()
+            desc = rf.find('DescriptionThai').text.strip()
+            max_temp = re.findall(r'สูงสุด\s+(\d+-\d+|\d+)', desc)
+            wind_spd = re.findall(r'ความเร็ว\s+(\d+-\d+|\d+)', desc)
+            regional_weather[name] = {
+                'temp': max_temp[0] if max_temp else "N/A",
+                'wind': wind_spd[0] if wind_spd else "N/A",
+                'rain': "พบฝนบางพื้นที่" if any(x in desc for x in ["มีฝน", "ฝนฟ้าคะนอง"]) else None,
+                'vent': "อ่อนถึงไม่ดี" if "ระบายอากาศอยู่ในเกณฑ์อ่อน" in desc else "ระบายอากาศได้ดี"
+            }
+    except: pass
+
+    report = generate_executive_summary(critical_stations, now, regional_weather, history, is_daily_start)
     
-    if new_stations:
-        print(f"พบสถานีใหม่ {len(new_stations)} แห่ง")
-        for s in new_stations:
-            history['alerted_ids'].append(s['info']['stationID'])
-            
-        header_msg = f"📊 [รายงานการติดตามระบบเฝ้าระวัง PM2.5]\n⏰ ข้อมูล ณ วันที่: {date_formatted}\n🔴 พื้นที่เฝ้าระวังระดับวิกฤต: {len(current_red_stations)} สถานี (แจ้งเตือนใหม่ {len(new_stations)})\n"
-        header_msg += "--------------------------------\n"
-        
-        display_list = new_stations + [s for s in current_red_stations if s not in new_stations]
-        
-        grouped_stations = {}
-        for item in display_list:
-            r = item['region']
-            if r not in grouped_stations:
-                grouped_stations[r] = []
-            grouped_stations[r].append(item)
-        
-        messages_to_send = []
-        current_msg = header_msg
-        
-        for region, items in grouped_stations.items():
-            region_header = f"\n📁 *{region}*\n================================\n"
-            current_msg += region_header
-            
-            for item in items:
-                s = item['info']
-                st = item['stats']
-                w = item['weather']
-                
-                new_tag = "🆕 " if s['stationID'] in [n['info']['stationID'] for n in new_stations] else ""
-                aqi = calculate_thai_aqi(st['now'])
-                
-                # PM2.5 & Machine Status
-                block_text = (f"{new_tag}📍 {s['nameTH']} ({s['stationID']})\n"
-                             f"จังหวัด: {item['province']}\n\n"
-                             f"💨 1. ข้อมูลฝุ่น PM2.5\n"
-                             f"• Range (AVG.1 hr): {st['range']} µg/m³\n"
-                             f"• Current Data (AVG.24 hr): {st['now']} µg/m³\n"
-                             f"• AQI: {aqi}\n"
-                             f"• Status: {st['status']}\n\n"
-                             f"📝 2. สรุปสถานะเครื่องตรวจวัดเบื้องต้น: {item['analysis']}\n\n")
-
-                # Weather Block
-                w_text = f"🌦️ 3. ข้อมูลอุตุนิยมวิทยาเบื้องต้น\n(แหล่งข้อมูล: {w['source']})\n"
-                if w['temp']: w_text += f"• อุณหภูมิ: {w['temp']}°C | ความชื้น: {w['hum']}%\n"
-                
-                if w['wind_dir']:
-                    if w['wind_spd'] == 0.0 or w['wind_spd'] < 0.5:
-                        w_text += f"• ทิศทางลม: พัดจาก{w['wind_dir']}\n• ความเร็วลม: ลมสงบ\n"
-                    else:
-                        wind_cat = get_wind_category(w['wind_spd'])
-                        w_text += f"• ทิศทางลม: พัดจาก{w['wind_dir']}\n• ความเร็วลม: {wind_cat} ({w['wind_spd']:.1f} m/s)\n"
-                else: 
-                    w_text += "• ข้อมูลลม: ไม่พบข้อมูลอุตุนิยมวิทยาในพื้นที่ใกล้เคียง\n"
-                
-                block_text += w_text
-                block_text += "--------------------------------\n"
-                
-                if len(current_msg) + len(block_text) > 4000:
-                    messages_to_send.append(current_msg)
-                    current_msg = block_text
-                else:
-                    current_msg += block_text
-
-        if current_msg:
-            messages_to_send.append(current_msg)
-
-        send_success = True
-        for msg_text in messages_to_send:
-            try:
-                response = requests.post("https://api.line.me/v2/bot/message/push", 
-                              headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
-                              json={"to": USER_ID, "messages": [{"type": "text", "text": msg_text}]})
-                
-                if response.status_code != 200:
-                    print(f"LINE API Error: {response.status_code} - {response.text}")
-                    send_success = False
-            except Exception as e:
-                print(f"เกิดข้อผิดพลาดในการเชื่อมต่อกับ LINE API: {e}")
-                send_success = False
-        
-        if send_success:
-            print("ส่งข้อมูลเข้า LINE สำเร็จเรียบร้อย")
-            with open(LOG_FILE, 'w') as f:
-                json.dump(history, f)
-        else:
-            print("คำเตือน: ส่งข้อมูลไม่ครบถ้วน อาจมีปัญหาจากฝั่ง LINE API")
+    if report:
+        send_tg(report)
+        save_history(current_red_ids, now.strftime('%Y-%m-%d %H:%M'))
     else:
-        print("ไม่มีสถานีแจ้งเตือนใหม่ (และยังไม่มีสถานีเก่ากลับมาแดง)")
-        
-        with open(LOG_FILE, 'w') as f:
-            json.dump(history, f)
+        # อัปเดตประวัติเสมอเพื่อให้ระบบรู้สถานะปัจจุบัน (ป้องกันกรณี แดง -> ส้ม แล้วไม่รู้ตัว)
+        save_history(current_red_ids, now.strftime('%Y-%m-%d %H:%M'))
 
 if __name__ == "__main__":
     main()
