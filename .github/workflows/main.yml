@@ -1,45 +1,45 @@
-name: Air Quality Daily & Real-time Alert
+name: Run PM2.5 Alert Bot
 
 on:
   schedule:
-    # รันทุกๆ 20 นาที
-    - cron: '*/20 * * * *'
-  workflow_dispatch: 
+    # ตั้งเวลาให้รันทุกๆ 25 นาที (จะทำงานตอนนาทีที่ 0, 25, 50 ของทุกชั่วโมง)
+    - cron: '*/25 * * * *'
+  workflow_dispatch: # ปุ่มสำหรับกดรันด้วยตัวเอง (Manual run)
 
 permissions:
-  contents: write
+  contents: write # อนุญาตให้ Action บันทึกไฟล์ log.json กลับเข้า Repository ได้
 
 jobs:
-  report:
+  run-bot:
     runs-on: ubuntu-latest
-    # ปรับส่วนนี้เพื่ออนุญาตให้ใช้ Node.js 20 ต่อไปได้โดยไม่เกิดข้อผิดพลาดในการรัน
-    env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
-      
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4 # อัปเดตเป็น v4 เพื่อแก้แจ้งเตือน Node.js 20
+
+      - name: Setup Python
+        uses: actions/setup-python@v5 # อัปเดตเป็น v5 เพื่อแก้แจ้งเตือน Node.js 20
         with:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install requests pytz pandas
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas pytz
 
       - name: Run Bot Script
         env:
-          AIR4THAI_KEY: ${{ secrets.AIR4THAI_KEY }}
-          TMD_DAILY_KEY: ${{ secrets.TMD_DAILY_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
-        run: python bot.py
-
-      - name: Save Alert History
+          LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          GISTDA_API_KEY: ${{ secrets.GISTDA_API_KEY }}
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add critical_history.json || true
-          git commit -m "Update critical status history [skip ci]" || true
-          git push || true
+          python bot.py
+
+      - name: Commit and Push Log File
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add log.json
+          # เช็คว่าไฟล์ log.json มีการเปลี่ยนแปลงหรือไม่ ถ้ามีให้ทำการ Commit และ Push
+          git diff-index --quiet HEAD || git commit -m "Auto-update log.json"
+          git push
