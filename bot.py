@@ -109,11 +109,12 @@ def generate_executive_summary(critical_stations, now, regional_weather, history
         msg += f"📁 *{region}* ({len(stations)} สถานี)\n"
         msg += f"================================\n"
         for st in stations:
-            # ใช้ 🆕 สำหรับสถานีที่เพิ่งวิกฤต และ 📍 สำหรับสถานีเฝ้าระวังต่อเนื่อง
             status_tag = "🆕 แจ้งเตือนใหม่" if st['id'] not in last_ids else "📍 เฝ้าระวังต่อเนื่อง"
             msg += f"*{status_tag}*\n"
             msg += f"📍 `[{st['id']}]` {st['full_addr']}\n"
             msg += f"• ค่าราย ชม. (สูงสุด): `{st['v1h']}` | เฉลี่ย 24 ชม.: `{st['v24h']}`\n"
+            
+            # QA Status Logic
             if st['qa_issue']:
                 msg += f"📝 สถานะ: *พบค่าผิดปกติ ({st['qa_issue']}) เจ้าหน้าที่ตรวจสอบแล้วเครื่องทำงานตามปกติ*\n"
             else:
@@ -126,12 +127,14 @@ def generate_executive_summary(critical_stations, now, regional_weather, history
         msg += f"• การระบายอากาศ: {w.get('vent', 'ทรงตัว')}\n"
         msg += f"⚙️ การทำงานเครื่องมือ: *ปกติทุกจุด*\n\n"
 
+    # บรรทัดสรุปนับจำนวนแยกรายภาค
+    counts = [f"{r}: {len(sts)}" for r, sts in regional_groups.items() if sts]
+
     msg += f"----------------------------------\n"
     msg += f"📌 *สรุปภาพรวม:*\n"
-    msg += f"• *สถานการณ์ฝุ่น:* พบการสะสมตัวของฝุ่นละอองระดับสีแดง {len(critical_stations)} แห่ง "
-    msg += f"(สถานีใหม่ {len(new_alerts)} แห่ง)\n"
-    msg += f"• *ลักษณะอุตุนิยมวิทยา:* {regional_weather.get('ภาคเหนือ', {}).get('vent', 'ระบายอากาศอ่อน')} และลมนิ่งในหลายพื้นที่\n"
-    msg += f"• *สถานะเครื่องมือ:* เครื่องมือทุกสถานีตรวจวัดฯ ทำงานปกติ และพร้อมรายงานข้อมูลแบบ Real-time"
+    msg += f"• *สถานการณ์ฝุ่น:* พบการสะสมตัวของฝุ่นละอองระดับสีแดง {len(critical_stations)} แห่ง (แบ่งเป็น { ' | '.join(counts) })\n"
+    msg += f"• *ลักษณะทางอุตุนิยมวิทยา:* สภาวะลมนิ่งและการระบายอากาศที่ไม่ดีในหลายพื้นที่ ส่งผลให้ความเข้มข้นของฝุ่นเพิ่มสูงขึ้น\n"
+    msg += f"• *สถานะเครื่องมือ:* เครื่องมือทุกสถานีตรวจวัดฯ ทำงานปกติ"
     
     return msg
 
@@ -139,7 +142,7 @@ def main():
     now = get_now_th()
     history = load_history()
     
-    # ปรับเงื่อนไขให้ส่ง Daily Report เฉพาะการรันรอบแรกของช่วง 06:00 น. เท่านั้น (ป้องกันส่งซ้ำทุก 20 นาที)
+    # ปรับเงื่อนไขให้ส่ง Daily Report เฉพาะการรันรอบแรกของช่วง 06:00 น. เท่านั้น
     is_daily_start = (now.hour == 6 and now.minute < 20)
 
     try:
@@ -185,7 +188,7 @@ def main():
         send_tg(report)
         save_history(current_red_ids, now.strftime('%Y-%m-%d %H:%M'))
     else:
-        # อัปเดตประวัติเสมอเพื่อให้ระบบรู้สถานะปัจจุบัน (ป้องกันกรณี แดง -> ส้ม แล้วไม่รู้ตัว)
+        # อัปเดตประวัติเพื่อให้ระบบจดจำสถานะ แดง -> ส้ม แม้ไม่ได้ส่งข้อความ
         save_history(current_red_ids, now.strftime('%Y-%m-%d %H:%M'))
 
 if __name__ == "__main__":
