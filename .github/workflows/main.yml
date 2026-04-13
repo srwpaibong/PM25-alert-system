@@ -9,16 +9,20 @@ on:
 permissions:
   contents: write # อนุญาตให้ Action บันทึกไฟล์ log.json กลับเข้า Repository ได้
 
+# บังคับให้ GitHub Actions รันบน Node 24 เพื่อแก้ปัญหาคำเตือนแจ้งเตือน Node.js 20
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true 
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4 # อัปเดตเป็น v4 เพื่อแก้แจ้งเตือน Node.js 20
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v5 # อัปเดตเป็น v5 เพื่อแก้แจ้งเตือน Node.js 20
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -31,7 +35,6 @@ jobs:
         env:
           LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-          GISTDA_API_KEY: ${{ secrets.GISTDA_API_KEY }}
         run: |
           python bot.py
 
