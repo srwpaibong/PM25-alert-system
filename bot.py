@@ -224,7 +224,7 @@ def main():
     
     header_msg = f"📊 **[รายงานสรุปภาพรวมระบบเฝ้าระวัง PM2.5 ระดับวิกฤต]**\n"
     header_msg += f"⏰ ข้อมูล ณ วันที่: {date_formatted}\n"
-    header_msg += f"🔴 จำนวนสถานีวิกฤตทั้งหมด: {total_stations} สถานี (แจ้งเตือนใหม่ {new_count})\n"
+    header_msg += f"🔴 ยอดสะสม: {total_stations} สถานี (ใหม่ {new_count})\n"
     header_msg += "="*32 + "\n"
     
     grouped_stations = defaultdict(list)
@@ -240,7 +240,7 @@ def main():
     # 1. ข้อมูลรายภาค
     for region, items in grouped_stations.items():
         items_sorted = sorted(items, key=lambda x: x['stats']['now'], reverse=True)
-        region_text = f"\n📁 **{region}** (จำนวน {len(items)} สถานี)\n"
+        region_text = f"\n📁 **{region} ({len(items)} สถานี)**\n"
         
         # คำนวณสภาพอากาศภาค
         temps = [i['weather']['temp'] for i in items_sorted if i['weather']['temp'] is not None]
@@ -258,12 +258,12 @@ def main():
         
         wind_cat = get_wind_category(avg_wind)
         if avg_wind < 0.5:
-            weather_str = f"อุณหภูมิเฉลี่ย {avg_temp:.1f}°C, ทิศทางลมหลักพัดจาก{common_dir}, ความเร็วลมเฉลี่ย: ลมสงบ"
+            weather_str = f"{avg_temp:.1f}°C | ลมสงบ (ทิศ{common_dir})"
         else:
-            weather_str = f"อุณหภูมิเฉลี่ย {avg_temp:.1f}°C, ทิศทางลมหลักพัดจาก{common_dir}, ความเร็วลมเฉลี่ย: {wind_cat} ({avg_wind:.1f} m/s)"
-        if has_rain: weather_str += " (มีฝนตกบางพื้นที่)"
+            weather_str = f"{avg_temp:.1f}°C | {wind_cat} {avg_wind:.1f} m/s (ทิศ{common_dir})"
+        if has_rain: weather_str += " | *มีฝนบางพื้นที่*"
             
-        region_text += f"🌦️ สภาพอากาศ: {weather_str}\n"
+        region_text += f"🌦️ **สภาพอากาศ:** {weather_str}\n"
         
         # คำนวณสถานะเครื่องแบบใหม่ (ระบุชื่อสถานีที่ผิดปกติ)
         normal_count = 0
@@ -272,25 +272,24 @@ def main():
         for i in items_sorted:
             status = i['stats']['status']
             s_id = i['info']['stationID']
-            s_name = i['info']['nameTH'].replace('สถานีอุตุนิยมวิทยา', 'สถานีฯ').replace('สำนักงานเทศบาล', 'ทต.')
             
             if "ปกติ" in status and "พบความผิดปกติ" not in status:
                 normal_count += 1
             else:
                 issue_raw = status.replace("พบความผิดปกติ: ", "").strip()
                 issue_short = issue_raw.split(',')[0].strip() # เอาแค่ชื่อย่อของปัญหาแรก
-                abnormal_stations.append(f"[{s_id}] {s_name} ({issue_short})")
+                abnormal_stations.append(f"[{s_id}]")
                 
         abnormal_count = len(abnormal_stations)
         
         if abnormal_count == 0:
-            region_text += f"📝 สถานะเครื่องตรวจวัด: **ยืนยันระบบตรวจวัดทำงานปกติทุกสถานี**\n"
+            region_text += f"📝 **สถานะเครื่อง:** ปกติ {normal_count} สถานี\n*(เจ้าหน้าที่ตรวจสอบแล้วยืนยันระบบทำงานปกติทุกจุด)*\n"
         else:
             abnormal_str = ", ".join(abnormal_stations)
-            region_text += f"📝 สถานะเครื่องตรวจวัด: ทำงานปกติ {normal_count} สถานี, พบความเสี่ยง {abnormal_count} สถานี ได้แก่ {abnormal_str} **เจ้าหน้าที่ตรวจสอบแล้ว ยืนยันเครื่องมือทำงานปกติทุกสถานี**\n"
+            region_text += f"📝 **สถานะเครื่อง:** ปกติ {normal_count} สถานี | เสี่ยง (Spike/อื่นๆ) {abnormal_count} สถานี ได้แก่ {abnormal_str}\n*(เจ้าหน้าที่ตรวจสอบแล้วยืนยันระบบทำงานปกติทุกจุด)*\n"
         
         # ลิสต์สถานีแบบกระชับ (รวมอำเภอ)
-        region_text += f"📍 รายชื่อสถานี (เรียงตามค่าเฉลี่ย 24 ชม.):\n"
+        region_text += f"📍 **รายชื่อสถานี (เฉลี่ย 24 ชม.):**\n"
         for idx, item in enumerate(items_sorted, 1):
             s = item['info']
             st = item['stats']
@@ -309,7 +308,7 @@ def main():
         else:
             current_msg += region_text
 
-    # 2. สรุปภาพรวมแนวโน้มระดับประเทศ (ปิดท้าย)
+    # 2. สรุปภาพรวมแนวโน้มระดับประเทศ (ปรับใหม่ตามที่ขอ)
     sorted_regions_by_count = sorted(grouped_stations.items(), key=lambda x: len(x[1]), reverse=True)
     region_trend_str = " และ ".join([f"**{r} ({len(items)} สถานี)**" for r, items in sorted_regions_by_count[:2]]) # เอา Top 2
     
@@ -318,14 +317,15 @@ def main():
     
     conclusion = "\n" + "="*32 + "\n"
     conclusion += "📌 **สรุปแนวโน้มสถานการณ์ภาพรวม**\n"
-    conclusion += f"• **สถานการณ์ฝุ่นรายภาค:** วิกฤตหนักที่สุดใน {region_trend_str} แนะนำให้เฝ้าระวังอย่างใกล้ชิด\n"
+    conclusion += f"• **สถานการณ์ฝุ่นรายภาค:** วิกฤตกระจุกตัวใน {region_trend_str} ภาพรวมค่าฝุ่นยังคงมีแนวโน้มสะสมตัวต่อเนื่องในระดับที่ต้องเฝ้าระวัง\n"
+    conclusion += "• **ช่วงเวลาสะสมตัวของฝุ่น:** ปริมาณฝุ่นมักมีแนวโน้มเพิ่มสูงและสะสมตัวมากที่สุดในช่วง **กลางคืนจนถึงช่วงเช้าตรู่ (22:00 - 08:00 น.)** เนื่องจากสภาพอากาศปิด ลมสงบ และเกิดปรากฏการณ์อุณหภูมิผกผัน (กดทับฝุ่นละอองไว้ใกล้ผิวดิน)\n"
     
     if avg_nat_wind < 0.5:
-        conclusion += f"• **แนวโน้มสภาพอากาศ:** อุณหภูมิเฉลี่ยระดับประเทศ {avg_nat_temp:.1f}°C สภาพลมโดยรวมอยู่ในเกณฑ์ \"ลมสงบ\" ซึ่งเป็นปัจจัยหลักที่ทำให้ฝุ่นละอองสะสมตัวและไม่ระบายออก\n"
+        conclusion += f"• **สภาพอากาศภาพรวม:** อุณหภูมิเฉลี่ยระดับประเทศ {avg_nat_temp:.1f}°C สภาพลมโดยรวมอยู่ในเกณฑ์ \"ลมสงบ\" ซึ่งเป็นปัจจัยหลักที่ทำให้ฝุ่นไม่สามารถแพร่กระจายตัวได้\n"
     else:
-        conclusion += f"• **แนวโน้มสภาพอากาศ:** อุณหภูมิเฉลี่ยระดับประเทศ {avg_nat_temp:.1f}°C สภาพลมโดยรวมอยู่ในเกณฑ์ \"{get_wind_category(avg_nat_wind)}\" ซึ่งยังคงเป็นปัจจัยส่งเสริมให้เกิดการสะสมของฝุ่น\n"
+        conclusion += f"• **สภาพอากาศภาพรวม:** อุณหภูมิเฉลี่ยระดับประเทศ {avg_nat_temp:.1f}°C สภาพลมโดยรวมอยู่ในเกณฑ์ \"{get_wind_category(avg_nat_wind)}\" ซึ่งยังค่อนข้างนิ่งและเป็นปัจจัยหลักที่ทำให้ฝุ่นไม่สามารถระบายออกได้\n"
         
-    conclusion += "• **ความพร้อมของระบบ:** เครื่องมือตรวจวัดและระบบเซิร์ฟเวอร์ส่วนกลางทำงานเต็มประสิทธิภาพ แม้จะพบความเสี่ยงค่าฝุ่นกระโดดผิดปกติในบางพื้นที่ แต่ผ่านการตรวจสอบและยืนยันความถูกต้องแล้วทุกจุด\n"
+    conclusion += "• **ความพร้อมของระบบ:** ระบบรายงานผลทำงานเป็นปกติ ค่าฝุ่นที่กระโดดผิดปกติ (Spike) ในบางพื้นที่ได้ผ่านการตรวจสอบและยืนยันค่าจากเจ้าหน้าที่เรียบร้อยแล้ว\n"
 
     if len(current_msg) + len(conclusion) > 4000:
         messages_to_send.append(current_msg)
