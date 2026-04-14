@@ -41,16 +41,16 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
-def deg_to_compass_thai(num):
-    if num is None: return "ไม่ระบุ"
+def deg_to_compass_short(num):
+    if num is None: return "ไม่ระบุทิศ"
     try:
         val = int((float(num)/22.5)+.5)
-        arr = ["ทิศเหนือ", "ทิศตะวันออกเฉียงเหนือ", "ทิศตะวันออกเฉียงเหนือ", "ทิศตะวันออกเฉียงเหนือ",
-               "ทิศตะวันออก", "ทิศตะวันออกเฉียงใต้", "ทิศตะวันออกเฉียงใต้", "ทิศตะวันออกเฉียงใต้",
-               "ทิศใต้", "ทิศตะวันตกเฉียงใต้", "ทิศตะวันตกเฉียงใต้", "ทิศตะวันตกเฉียงใต้",
-               "ทิศตะวันตก", "ทิศตะวันตกเฉียงเหนือ", "ทิศตะวันตกเฉียงเหนือ", "ทิศตะวันตกเฉียงเหนือ"]
+        arr = ["เหนือ", "ต.อ.เฉียงเหนือ", "ต.อ.เฉียงเหนือ", "ต.อ.เฉียงเหนือ",
+               "ตะวันออก", "ต.อ.เฉียงใต้", "ต.อ.เฉียงใต้", "ต.อ.เฉียงใต้",
+               "ใต้", "ต.ต.เฉียงใต้", "ต.ต.เฉียงใต้", "ต.ต.เฉียงใต้",
+               "ตะวันตก", "ต.ต.เฉียงเหนือ", "ต.ต.เฉียงเหนือ", "ต.ต.เฉียงเหนือ"]
         return arr[(val % 16)]
-    except: return "ไม่ระบุ"
+    except: return "ไม่ระบุทิศ"
 
 def format_thai_datetime_short(dt):
     thai_months = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", 
@@ -115,7 +115,7 @@ def find_nearest_weather(lat, lon, tmd_features):
         w_deg = nearest_feature.get('windDir')
         if w_deg is not None:
             weather['wind_deg'] = float(w_deg)
-            weather['wind_dir'] = deg_to_compass_thai(w_deg)
+            weather['wind_dir'] = deg_to_compass_short(w_deg)
             
     return weather
 
@@ -220,10 +220,10 @@ def main():
     total_stations = len(current_red_stations)
     new_count = len(new_stations)
     
-    header_msg = f"📊 **[รายงานสรุปภาพรวม PM2.5 ระดับวิกฤต]**\n"
-    header_msg += f"⏰ **ข้อมูล ณ:** {date_formatted}\n"
+    header_msg = f"🚨 **【 รายงานสรุปภาพรวม PM2.5 ระดับวิกฤต 】** 🚨\n"
+    header_msg += f"📅 **ข้อมูล ณ:** {date_formatted}\n"
     header_msg += f"🔴 **ยอดสะสม:** {total_stations} สถานี (ใหม่ {new_count})\n"
-    header_msg += "="*32 + "\n"
+    header_msg += "━━━━━━━━━━━━━━━━━━━\n"
     
     grouped_stations = defaultdict(list)
     for item in current_red_stations:
@@ -237,12 +237,12 @@ def main():
     
     for region, items in grouped_stations.items():
         items_sorted = sorted(items, key=lambda x: x['stats']['now'], reverse=True)
-        region_text = f"\n📁 **{region} ({len(items)} สถานี)**\n"
+        region_text = f"\n📍 **【 {region} 】** ({len(items)} สถานี)\n"
         
         # Weather Processing
         temps = [i['weather']['temp'] for i in items_sorted if i['weather']['temp'] is not None]
         winds = [i['weather']['wind_spd'] for i in items_sorted if i['weather']['wind_spd'] is not None]
-        dirs = [i['weather']['wind_dir'] for i in items_sorted if i['weather']['wind_dir'] and i['weather']['wind_dir'] != "ไม่ระบุ"]
+        dirs = [i['weather']['wind_dir'] for i in items_sorted if i['weather']['wind_dir'] and i['weather']['wind_dir'] != "ไม่ระบุทิศ"]
         precips = [i['weather'].get('precip', 0) for i in items_sorted]
         
         min_temp = min(temps) if temps else 0
@@ -258,9 +258,9 @@ def main():
         temp_str = f"{min_temp:.1f} - {max_temp:.1f}°C" if min_temp != max_temp else f"{min_temp:.1f}°C"
         
         if avg_wind < 0.5:
-            weather_str = f"อุณหภูมิ {temp_str} | ลมสงบ (ทิศทางลมส่วนใหญ่: {common_dir})"
+            weather_str = f"{temp_str} | ลมสงบ ({common_dir})"
         else:
-            weather_str = f"อุณหภูมิ {temp_str} | {wind_cat} {avg_wind:.1f} m/s (ทิศทางลมส่วนใหญ่: {common_dir})"
+            weather_str = f"{temp_str} | {wind_cat} {avg_wind:.1f} m/s ({common_dir})"
         
         if has_rain: weather_str += " | *มีฝนบางพื้นที่*"
             
@@ -276,25 +276,33 @@ def main():
             if "ปกติ" in status and "พบความผิดปกติ" not in status:
                 normal_count += 1
             else:
-                abnormal_stations.append(f"[{s_id}]")
+                issue_raw = status.replace("พบความผิดปกติ:", "").strip()
+                issue_short = issue_raw.split(',')[0].strip() # ดึงปัญหาแรกสุดมาโชว์
+                abnormal_stations.append(f"[{s_id}]({issue_short})")
                 
         abnormal_count = len(abnormal_stations)
         
         if abnormal_count == 0:
-            region_text += f"⚙️ **สถานะเครื่อง:** ปกติ {normal_count} สถานี\n*(จนท. ตรวจสอบแล้วยืนยันระบบทำงานปกติทุกจุด)*\n"
+            region_text += f"⚙️ **สถานะเครื่อง:** ปกติ {normal_count} สถานี\n*(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)*\n"
         else:
             abnormal_str = ", ".join(abnormal_stations)
-            region_text += f"⚙️ **สถานะเครื่อง:** ปกติ {normal_count} สถานี | เสี่ยง {abnormal_count} สถานี ได้แก่ {abnormal_str}\n*(จนท. ตรวจสอบแล้วยืนยันระบบทำงานปกติทุกจุด)*\n"
+            region_text += f"⚙️ **สถานะเครื่อง:** ปกติ {normal_count} | **เสี่ยง {abnormal_count}** `{abnormal_str}`\n*(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)*\n"
         
         # Station List Processing
-        region_text += f"📍 **พื้นที่วิกฤต (เฉลี่ย 24 ชม.):**\n"
+        region_text += f"📋 **TOP พื้นที่วิกฤต (เฉลี่ย 24 ชม.):**\n"
         for idx, item in enumerate(items_sorted, 1):
             s = item['info']
             st = item['stats']
             
-            # แปลง areaTH เป็น "ต.xxx อ.xxx จ.xxx"
-            area_str = " ".join([part.strip() for part in s['areaTH'].split(',') if part.strip()])
-            region_text += f"  {idx}. [{s['stationID']}] {area_str} ({st['now']} µg/m³)\n"
+            area_parts = [part.strip() for part in s['areaTH'].split(',') if part.strip()]
+            clean_area_parts = []
+            for part in area_parts:
+                if part.startswith('อ.ต.'): clean_area_parts.append('ต.' + part[4:])
+                else: clean_area_parts.append(part)
+            
+            area_str = " ".join(clean_area_parts)
+            
+            region_text += f"  {idx}. [{s['stationID']}] {area_str} (**{st['now']}** µg/m³)\n"
             
         if len(current_msg) + len(region_text) > 4000:
             messages_to_send.append(current_msg)
@@ -311,17 +319,17 @@ def main():
     avg_nat_wind = sum(nat_winds)/len(nat_winds) if nat_winds else 0
     nat_temp_str = f"{min_nat_temp:.1f} - {max_nat_temp:.1f}°C" if min_nat_temp != max_nat_temp else f"{min_nat_temp:.1f}°C"
     
-    conclusion = "\n" + "="*32 + "\n"
-    conclusion += "📌 **สรุปแนวโน้มสถานการณ์**\n"
-    conclusion += f"• **พิกัดวิกฤต:** กระจุกตัวหนักใน {region_trend_str} ภาพรวมฝุ่นยังคงสะสมตัวต่อเนื่อง\n"
-    conclusion += "• **ช่วงเวลาสะสมตัว:** ฝุ่นจะพุ่งสูงและสะสมตัวหนาแน่นช่วง **กลางคืนถึงเช้าตรู่ (22:00-08:00 น.)** จากภาวะอากาศปิดและอุณหภูมิผกผัน\n"
+    conclusion = "\n━━━━━━━━━━━━━━━━━━━\n"
+    conclusion += "📌 **【 สรุปแนวโน้มสถานการณ์ 】**\n"
+    conclusion += f"📈 **พิกัดวิกฤต:** กระจุกตัวหนักใน {region_trend_str} ภาพรวมฝุ่นยังสะสมตัวต่อเนื่อง\n"
+    conclusion += "🌙 **ช่วงเวลาสะสมตัว:** พุ่งสูงช่วง **22:00-08:00 น.** (กลางคืนถึงเช้าตรู่) จากภาวะอากาศปิดและอุณหภูมิผกผัน\n"
     
     if avg_nat_wind < 0.5:
-        conclusion += f"• **สภาพอากาศภาพรวม:** อุณหภูมิระดับประเทศ {nat_temp_str} ลมส่วนใหญ่อยู่ในเกณฑ์ \"ลมสงบ\" ทำให้ฝุ่นไม่สามารถระบายออกได้\n"
+        conclusion += f"💨 **สภาพอากาศ:** เฉลี่ย {nat_temp_str} ลมส่วนใหญ่อยู่ในเกณฑ์ **\"ลมสงบ\"** ทำให้ฝุ่นไม่ระบายออก\n"
     else:
-        conclusion += f"• **สภาพอากาศภาพรวม:** อุณหภูมิระดับประเทศ {nat_temp_str} ลมส่วนใหญ่อยู่ในเกณฑ์ \"{get_wind_category(avg_nat_wind)}\" ซึ่งทำให้ฝุ่นไม่สามารถระบายออกได้ดีเท่าที่ควร\n"
+        conclusion += f"💨 **สภาพอากาศ:** เฉลี่ย {nat_temp_str} ลมส่วนใหญ่อยู่ในเกณฑ์ **\"{get_wind_category(avg_nat_wind)}\"** ทำให้ฝุ่นระบายออกได้ไม่ดีนัก\n"
         
-    conclusion += "• **ระบบตรวจวัด:** เซิร์ฟเวอร์และเครื่องมือทำงานปกติ 100% (ค่า Spike ตรวจสอบแล้วเป็นค่าจริงจากสภาพอากาศ)\n"
+    conclusion += "✅ **ระบบตรวจวัด:** เครื่องมือทำงาน **ปกติ 100%** (ค่าความเสี่ยงตรวจสอบแล้วเป็นค่าจริงจากสภาพอากาศ)\n"
 
     if len(current_msg) + len(conclusion) > 4000:
         messages_to_send.append(current_msg)
