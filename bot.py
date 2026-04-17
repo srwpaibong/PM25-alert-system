@@ -157,8 +157,8 @@ def load_log():
     if os.path.exists(LOG_FILE):
         with open(LOG_FILE, 'r') as f:
             try: return json.load(f)
-            except: return {"last_date": "", "alerted_ids": []}
-    return {"last_date": "", "alerted_ids": []}
+            except: return {"last_date": "", "alerted_ids": [], "yesterday_counts": {}, "today_counts": {}}
+    return {"last_date": "", "alerted_ids": [], "yesterday_counts": {}, "today_counts": {}}
 
 def main():
     now = datetime.datetime.now(TIMEZONE)
@@ -167,8 +167,13 @@ def main():
     date_formatted = format_thai_datetime_short(now)
     
     history = load_log()
+    
+    # ระบบจำสถิติข้ามวัน (โอนยอดวันนี้ไปเป็นเมื่อวาน ตอน 6 โมงเช้า)
     if history.get('last_date') != today_str:
-        history = {"last_date": today_str, "alerted_ids": []}
+        history['yesterday_counts'] = history.get('today_counts', {})
+        history['last_date'] = today_str
+        history['alerted_ids'] = []
+        history['today_counts'] = {}
 
     try:
         tmd_features = get_all_tmd_stations()
@@ -186,7 +191,7 @@ def main():
         if val and s_id != "11t":
             pm25_now = float(val)
             if pm25_now <= 75.0:
-                if s_id in history['alerted_ids']:
+                if s_id in history.get('alerted_ids', []):
                     history['alerted_ids'].remove(s_id)
                 continue
             
@@ -205,7 +210,7 @@ def main():
                 "weather": weather
             })
 
-    new_stations = [s for s in current_red_stations if s['info']['stationID'] not in history['alerted_ids']]
+    new_stations = [s for s in current_red_stations if s['info']['stationID'] not in history.get('alerted_ids', [])]
     
     if not new_stations:
         print("ไม่มีสถานีแจ้งเตือนใหม่")
@@ -215,59 +220,75 @@ def main():
 
     print(f"พบสถานีใหม่ {len(new_stations)} แห่ง ส่งรายงานสรุปภาพรวม")
     for s in new_stations:
-        history['alerted_ids'].append(s['info']['stationID'])
+        history.setdefault('alerted_ids', []).append(s['info']['stationID'])
         
-    total_stations = len(current_red_stations)
-    new_count = len(new_stations)
-    
-    # แก้ไขเป็นใช้ * สำหรับตัวหนาใน LINE
-    header_msg = f"🚨 *【 รายงานสรุปภาพรวม PM2.5 ระดับวิกฤต 】* 🚨\n"
-    header_msg += f"📅 *ข้อมูล ณ:* {date_formatted}\n"
-    header_msg += f"🔴 *ยอดสะสม:* {total_stations} สถานี (ใหม่ {new_count})\n"
-    header_msg += "━━━━━━━━━━━━━━━━━━━\n"
-    
     grouped_stations = defaultdict(list)
     for item in current_red_stations:
         grouped_stations[item['region']].append(item)
         
+    # อัปเดตยอดสูงสุดของวันนี้ (เพื่อเตรียมไว้เป็นยอดเมื่อวาน ในรอบพรุ่งนี้เช้า)
+    for r, items in grouped_stations.items():
+        history.setdefault('today_counts', {})
+        history['today_counts'][r] = max(history['today_counts'].get(r, 0), len(items))
+        
+    total_stations = len(current_red_stations)
+    new_count = len(new_stations)
+    
+    # --- HEADER ---
+    header_msg = f"🚨 【 รายงานสรุปภาพรวม PM2.5 ระดับวิกฤต 】 🚨\n\n"
+    header_msg += f"📅 ข้อมูล ณ: {date_formatted}\n"
+    header_msg += f"🔴 ยอดสะสม: {total_stations} สถานี (ใหม่ {new_count})\n"
+    header_msg += "━━━━━━━━━━━━━━━━━━━\n\n"
+        
     messages_to_send = []
     current_msg = header_msg
     
-    nat_temps = []
-    nat_winds = []
+    region_summary_data = {} # เก็บข้อมูลไว้สรุปตอนท้าย
     
+    # --- BODY (แยกรายภาค) ---
     for region, items in grouped_stations.items():
         items_sorted = sorted(items, key=lambda x: x['stats']['now'], reverse=True)
-        region_text = f"\n📍 *【 {region} 】* ({len(items)} สถานี)\n"
+        region_text = f"📍 【 {region} 】 ({len(items)} สถานี)\n\n"
         
         # Weather Processing
         temps = [i['weather']['temp'] for i in items_sorted if i['weather']['temp'] is not None]
+        hums = [i['weather']['hum'] for i in items_sorted if i['weather']['hum'] is not None]
         winds = [i['weather']['wind_spd'] for i in items_sorted if i['weather']['wind_spd'] is not None]
         dirs = [i['weather']['wind_dir'] for i in items_sorted if i['weather']['wind_dir'] and i['weather']['wind_dir'] != "ไม่ระบุทิศ"]
-        precips = [i['weather'].get('precip', 0) for i in items_sorted]
         
         min_temp = min(temps) if temps else 0
         max_temp = max(temps) if temps else 0
+        min_hum = min(hums) if hums else 0
+        max_hum = max(hums) if hums else 0
         avg_wind = sum(winds)/len(winds) if winds else 0
         common_dir = max(set(dirs), key=dirs.count) if dirs else "ไม่ระบุทิศ"
-        has_rain = any(p > 0 for p in precips)
-        
-        nat_temps.extend(temps)
-        nat_winds.extend(winds)
         
         wind_cat = get_wind_category(avg_wind)
-        temp_str = f"{min_temp:.1f} - {max_temp:.1f}°C" if min_temp != max_temp else f"{min_temp:.1f}°C"
+        temp_str = f"{min_temp:.1f} - {max_temp:.1f} °C" if min_temp != max_temp else f"{min_temp:.1f} °C"
+        hum_str = f"{min_hum} - {max_hum} %" if min_hum != max_hum else f"{min_hum} %"
         
         if avg_wind < 0.5:
-            weather_str = f"{temp_str} | ลมสงบ ({common_dir})"
+            wind_str = f"ลมสงบ (ทิศ{common_dir})"
         else:
-            weather_str = f"{temp_str} | {wind_cat} {avg_wind:.1f} m/s ({common_dir})"
-        
-        if has_rain: weather_str += " | *มีฝนบางพื้นที่*"
+            wind_str = f"{wind_cat} {avg_wind:.1f} m/s (ทิศ{common_dir})"
             
-        region_text += f"🌡️ *สภาพอากาศ:* {weather_str}\n"
+        region_text += f"🌡️ สภาพอากาศ:\n"
+        region_text += f"• อุณหภูมิ: {temp_str}\n"
+        region_text += f"• ความชื้นสัมพัทธ์: {hum_str}\n"
+        region_text += f"• ลม: {wind_str}\n\n"
         
-        # Machine Status Processing
+        # เก็บข้อมูลไว้ใช้ส่วน Conclusion
+        pm25_vals = [i['stats']['now'] for i in items_sorted]
+        region_summary_data[region] = {
+            "count": len(items),
+            "temp": temp_str,
+            "hum": hum_str,
+            "wind": wind_cat,
+            "pm25_min": min(pm25_vals) if pm25_vals else 0,
+            "pm25_max": max(pm25_vals) if pm25_vals else 0
+        }
+        
+        # Machine Status
         normal_count = 0
         abnormal_stations = []
         
@@ -279,32 +300,31 @@ def main():
             else:
                 issue_raw = status.replace("พบความผิดปกติ:", "").strip()
                 issue_short = issue_raw.split(',')[0].strip()
-                abnormal_stations.append(f"[{s_id}]({issue_short})")
+                abnormal_stations.append(f"{s_id}({issue_short})")
                 
         abnormal_count = len(abnormal_stations)
         
         if abnormal_count == 0:
-            region_text += f"⚙️ *สถานะเครื่อง:* ปกติ {normal_count} สถานี\n*(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)*\n"
+            region_text += f"⚙️ สถานะเครื่อง:\nปกติ {normal_count} สถานี\n(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)\n\n"
         else:
             abnormal_str = ", ".join(abnormal_stations)
-            region_text += f"⚙️ *สถานะเครื่อง:* ปกติ {normal_count} | *เสี่ยง {abnormal_count}* `{abnormal_str}`\n*(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)*\n"
+            region_text += f"⚙️ สถานะเครื่อง: \nปกติ {normal_count} | เสี่ยง {abnormal_count} [{abnormal_str}]\n(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)\n\n"
         
         # Station List Processing
-        region_text += f"📋 *TOP พื้นที่วิกฤต (เฉลี่ย 24 ชม.):*\n"
+        region_text += f"📋 TOP พื้นที่วิกฤต (เฉลี่ย 24 ชม.):\n"
         for idx, item in enumerate(items_sorted, 1):
             s = item['info']
             st = item['stats']
-            
             area_parts = [part.strip() for part in s['areaTH'].split(',') if part.strip()]
             clean_area_parts = []
             for part in area_parts:
                 if part.startswith('อ.ต.'): clean_area_parts.append('ต.' + part[4:])
                 else: clean_area_parts.append(part)
-            
             area_str = " ".join(clean_area_parts)
             
-            # ใช้ * 1 ตัว สำหรับทำตัวหนาใน LINE
-            region_text += f"  {idx}. [{s['stationID']}] {area_str} (*{st['now']}* µg/m³)\n"
+            region_text += f"  {idx}. [{s['stationID']}] {area_str} ({st['now']} µg/m³)\n"
+            
+        region_text += "\n\n"
             
         if len(current_msg) + len(region_text) > 4000:
             messages_to_send.append(current_msg)
@@ -312,26 +332,44 @@ def main():
         else:
             current_msg += region_text
 
-    # --- National Conclusion ---
+    # --- CONCLUSION ---
+    conclusion = "━━━━━━━━━━━━━━━━━━━\n\n"
+    conclusion += "📌 【 สรุปแนวโน้มสถานการณ์ 】\n\n"
+    
+    # 1. แนวโน้มฝุ่นละออง
+    conclusion += "📈 แนวโน้มฝุ่นละออง:\n"
     sorted_regions_by_count = sorted(grouped_stations.items(), key=lambda x: len(x[1]), reverse=True)
-    region_trend_str = " และ ".join([f"*{r} ({len(items)})*" for r, items in sorted_regions_by_count[:2]])
     
-    min_nat_temp = min(nat_temps) if nat_temps else 0
-    max_nat_temp = max(nat_temps) if nat_temps else 0
-    avg_nat_wind = sum(nat_winds)/len(nat_winds) if nat_winds else 0
-    nat_temp_str = f"{min_nat_temp:.1f} - {max_nat_temp:.1f}°C" if min_nat_temp != max_nat_temp else f"{min_nat_temp:.1f}°C"
-    
-    conclusion = "\n━━━━━━━━━━━━━━━━━━━\n"
-    conclusion += "📌 *【 สรุปแนวโน้มสถานการณ์ 】*\n"
-    conclusion += f"📈 *พิกัดวิกฤต:* กระจุกตัวหนักใน {region_trend_str} ภาพรวมฝุ่นยังสะสมตัวต่อเนื่อง\n"
-    conclusion += "🌙 *ช่วงเวลาสะสมตัว:* พุ่งสูงช่วง *22:00-08:00 น.* (กลางคืนถึงเช้าตรู่) จากภาวะอากาศปิดและอุณหภูมิผกผัน\n"
-    
-    if avg_nat_wind < 0.5:
-        conclusion += f"💨 *สภาพอากาศ:* เฉลี่ย {nat_temp_str} ลมส่วนใหญ่อยู่ในเกณฑ์ *\"ลมสงบ\"* ทำให้ฝุ่นไม่ระบายออก\n"
-    else:
-        conclusion += f"💨 *สภาพอากาศ:* เฉลี่ย {nat_temp_str} ลมส่วนใหญ่อยู่ในเกณฑ์ *\"{get_wind_category(avg_nat_wind)}\"* ทำให้ฝุ่นระบายออกได้ไม่ดีนัก\n"
+    for r, items in sorted_regions_by_count:
+        curr_count = len(items)
+        yest_count = history.get('yesterday_counts', {}).get(r, 0)
+        diff = curr_count - yest_count
         
-    conclusion += "✅ *ระบบตรวจวัด:* เครื่องมือทำงาน *ปกติ 100%* (ค่าความเสี่ยงตรวจสอบแล้วเป็นค่าจริงจากสภาพอากาศ)\n"
+        if diff > 0: trend_str = f"เพิ่มขึ้นจากเมื่อวาน {diff} สถานี"
+        elif diff < 0: trend_str = f"ลดลงจากเมื่อวาน {abs(diff)} สถานี"
+        else: trend_str = f"ทรงตัวเท่ากับเมื่อวาน"
+        
+        rmin = region_summary_data[r]['pm25_min']
+        rmax = region_summary_data[r]['pm25_max']
+        conclusion += f"• {r}: วิกฤต {curr_count} สถานี ({trend_str}) | ค่าฝุ่นอยู่ระหว่าง {rmin} - {rmax} µg/m³\n"
+
+    # 2. ช่วงเวลาสะสมตัว
+    conclusion += "\n🌙 ช่วงเวลาสะสมตัว:\nพุ่งสูงช่วง 22:00-08:00 น. (กลางคืนถึงเช้าตรู่) จากภาวะอากาศปิดและอุณหภูมิผกผัน\n\n"
+    
+    # 3. สภาพอากาศภาพรวมรายภาค
+    conclusion += "💨 สภาพอากาศภาพรวมรายภาค:\n"
+    for r, items in sorted_regions_by_count:
+        r_temp = region_summary_data[r]['temp']
+        r_hum = region_summary_data[r]['hum']
+        r_wind = region_summary_data[r]['wind']
+        
+        if r_wind == "ลมสงบ": wind_eff = "ทำให้ฝุ่นไม่ระบายออก"
+        else: wind_eff = "ทำให้ฝุ่นระบายออกได้ไม่ดีนัก"
+        
+        conclusion += f"• {r}: อุณหภูมิ {r_temp} | ความชื้น {r_hum} | ลมส่วนใหญ่อยู่ในเกณฑ์ \"{r_wind}\" {wind_eff}\n"
+        
+    # 4. ระบบตรวจวัด
+    conclusion += "\n✅ ระบบตรวจวัด:\nเครื่องมือทำงานปกติ 100% (ค่าความเสี่ยงตรวจสอบแล้วเป็นค่าจริงจากสภาพอากาศ)\n"
 
     if len(current_msg) + len(conclusion) > 4000:
         messages_to_send.append(current_msg)
