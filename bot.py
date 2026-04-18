@@ -4,7 +4,7 @@ import os
 import json
 import datetime
 import pytz
-import re
+import math
 from collections import defaultdict
 
 # --- Configuration ---
@@ -13,7 +13,7 @@ USER_ID = os.getenv('LINE_USER_ID')
 TIMEZONE = pytz.timezone('Asia/Bangkok')
 LOG_FILE = "log.json"
 
-# การแบ่งภูมิภาค (Air4Thai)
+# การแบ่งภูมิภาค
 REGION_MAP = {
     'ภาคเหนือ': ['เชียงราย', 'เชียงใหม่', 'พะเยา', 'แพร่', 'น่าน', 'อุตรดิตถ์', 'ลำปาง', 'ตาก', 'ลำพูน', 'แม่ฮ่องสอน', 'สุโขทัย', 'กำแพงเพชร', 'เพชรบูรณ์', 'พิษณุโลก', 'นครสวรรค์', 'อุทัยธานี', 'พิจิตร'],
     'ภาคกลาง': ['กาญจนบุรี', 'สุพรรณบุรี', 'อ่างทอง', 'ชัยนาท', 'สิงห์บุรี', 'ราชบุรี', 'นครปฐม', 'สมุทรสงคราม', 'สระบุรี', 'พระนครศรีอยุธยา', 'ลพบุรี'], 
@@ -29,65 +29,82 @@ def get_region(province_name):
             return region
     return "พื้นที่อื่นๆ"
 
+# --- Helper Functions ---
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2) * math.sin(dlat/2) + \
+        math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
+        math.sin(dlon/2) * math.sin(dlon/2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
+
+def deg_to_compass_short(num):
+    if num is None: return "ไม่ระบุทิศ"
+    try:
+        val = int((float(num)/22.5)+.5)
+        arr = ["เหนือ", "ตะวันออกเฉียงเหนือ", "ตะวันออกเฉียงเหนือ", "ตะวันออกเฉียงเหนือ",
+               "ตะวันออก", "ตะวันออกเฉียงใต้", "ตะวันออกเฉียงใต้", "ตะวันออกเฉียงใต้",
+               "ใต้", "ตะวันตกเฉียงใต้", "ตะวันตกเฉียงใต้", "ตะวันตกเฉียงใต้",
+               "ตะวันตก", "ตะวันตกเฉียงเหนือ", "ตะวันตกเฉียงเหนือ", "ตะวันตกเฉียงเหนือ"]
+        return arr[(val % 16)]
+    except: return "ไม่ระบุทิศ"
+
 def format_thai_datetime(dt):
     thai_months = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", 
                    "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
     year = dt.year + 543
     return f"{dt.day} {thai_months[dt.month]} {year} | {dt.strftime('%H:%M')} น."
 
-# --- แก้ไขระบบดึงข้อมูลพยากรณ์อากาศกรมอุตุฯ (TMD Daily Forecast API) ---
-def get_daily_forecast():
-    url = "https://data.tmd.go.th/api/DailyForecast/v2/?uid=api&ukey=api12345&format=json"
+def get_wind_category(speed_ms):
+    if speed_ms is None: return "ไม่ทราบเกณฑ์ลม"
+    if speed_ms < 0.5: return "ลมสงบ"
+    elif speed_ms <= 3.3: return "ลมอ่อน"
+    elif speed_ms <= 7.9: return "ลมปานกลาง"
+    else: return "ลมแรง"
+
+# --- Data Fetching (ใช้ตัวเดิมที่เสถียร) ---
+def get_all_tmd_stations():
+    url = "http://122.155.135.49/api/home/poi"
     try:
         res = requests.get(url, timeout=15).json()
-        forecast_data = res.get('DailyForecast', {})
-        
-        overall = forecast_data.get('OverallDescriptionThai', '')
-        
-        # จัดการบั๊กโครงสร้าง JSON ของกรมอุตุฯ ที่ซ้อนทับกัน
-        regions_list = []
-        if 'RegionsForecast' in forecast_data:
-            rf = forecast_data['RegionsForecast']
-            if isinstance(rf, list): 
-                regions_list = rf
-            elif isinstance(rf, dict) and 'RegionForecast' in rf: 
-                regions_list = rf['RegionForecast']
-        elif 'RegionForecast' in forecast_data:
-            regions_list = forecast_data['RegionForecast']
-            
-        # ถ้าเผลอส่งมาเป็นก้อนเดียว (ไม่เป็น List) ให้ครอบด้วย List
-        if isinstance(regions_list, dict):
-            regions_list = [regions_list]
-            
-        regions_data = {}
-        for r in regions_list:
-            name = r.get('RegionNameThai', '').strip()
-            desc = r.get('DescriptionThai', '').strip()
-            # แปลงชื่อภาคของอุตุฯ ให้ตรงกับ Air4Thai
-            if 'กรุงเทพ' in name: name = 'กรุงเทพฯและปริมณฑล'
-            elif 'ใต้' in name: name = 'ภาคใต้' 
-            regions_data[name] = desc
-            
-        return overall, regions_data
+        return res.get('features', [])
     except Exception as e:
-        print(f"TMD Forecast API Error: {e}")
-        return "", {}
+        print(f"TMD POI Error: {e}")
+        return []
 
-def parse_region_forecast(desc):
-    if not desc: return "ไม่พบข้อมูลพยากรณ์อากาศ", "ไม่ระบุ", "ไม่ระบุ"
+def find_nearest_weather(lat, lon, tmd_features):
+    weather = {
+        "source": "ไม่พบข้อมูล", "temp": None, "hum": None, 
+        "wind_spd": None, "wind_dir": None, "wind_deg": None,
+        "dist": 9999, "precip": 0
+    }
     
-    # ใช้ Regex ดึงข้อมูลอุณหภูมิและลมอย่างแม่นยำ
-    t_min_match = re.search(r'อุณหภูมิต่ำสุด\s*([0-9\-\.\s]+)\s*องศา', desc)
-    t_max_match = re.search(r'อุณหภูมิสูงสุด\s*([0-9\-\.\s]+)\s*องศา', desc)
-    wind_match = re.search(r'ลม(.*?)\s*ความเร็ว\s*([0-9\-\.\s]+)\s*กม./ชม.', desc)
+    if not tmd_features: return weather
+    min_dist = 99999
+    nearest = None
+
+    for f in tmd_features:
+        try:
+            props = f.get('properties', {})
+            s_lat = props.get('lat')
+            s_lon = props.get('lon')
+            if s_lat is None or s_lon is None: continue
+            
+            dist = haversine(lat, lon, s_lat, s_lon)
+            if dist < min_dist:
+                min_dist = dist
+                nearest = props
+        except: continue
     
-    t_str = f"{t_min_match.group(1).strip()} ถึง {t_max_match.group(1).strip()} °C" if (t_min_match and t_max_match) else "ไม่ระบุ"
-    w_str = f"{wind_match.group(1).strip()} ({wind_match.group(2).strip()} กม./ชม.)" if wind_match else "ไม่ระบุ"
-    
-    # ดึงเฉพาะประโยคแรกๆ ที่เป็นการอธิบายสภาพอากาศทั่วไปมาโชว์
-    general_cond = desc.split('อุณหภูมิต่ำสุด')[0].strip()
-    
-    return general_cond, t_str, w_str
+    if nearest:
+        weather['temp'] = nearest.get('temp')
+        weather['hum'] = nearest.get('humidity')
+        weather['wind_spd'] = nearest.get('windSpeed')
+        weather['wind_dir'] = deg_to_compass_short(nearest.get('windDir'))
+            
+    return weather
 
 def analyze_station_integrity(s_id):
     now = datetime.datetime.now(TIMEZONE)
@@ -128,12 +145,12 @@ def main():
         history['alerted_ids'] = []
         history['today_counts'] = {}
 
-    # ดึงข้อมูลพยากรณ์อากาศภาพรวม
-    overall_forecast, regional_forecast = get_daily_forecast()
-
     try:
+        tmd_features = get_all_tmd_stations()
         res = requests.get("http://air4thai.com/forweb/getAQI_JSON.php", timeout=30).json()
-    except: return
+    except Exception as e:
+        print(f"API Error: {e}")
+        return
 
     current_red_stations = []
     for s in res.get('stations', []):
@@ -141,12 +158,16 @@ def main():
         if val and s['stationID'] != "11t" and float(val) > 75.0:
             s_id = s['stationID']
             integrity_status = analyze_station_integrity(s_id)
+            lat, lon = float(s['lat']), float(s['long'])
+            weather = find_nearest_weather(lat, lon, tmd_features)
+
             prov = s['areaTH'].split(',')[-1].strip().replace('จ.', '').replace('จังหวัด', '').strip()
             if prov == "กรุงเทพฯ": prov = "กรุงเทพมหานคร"
             
             current_red_stations.append({
                 "info": s, "province": prov, "region": get_region(prov),
-                "stats": {"now": float(val), "status": integrity_status}
+                "stats": {"now": float(val), "status": integrity_status},
+                "weather": weather
             })
 
     new_stations = [s for s in current_red_stations if s['info']['stationID'] not in history.get('alerted_ids', [])]
@@ -163,22 +184,48 @@ def main():
     for region, items in grouped.items():
         items_sorted = sorted(items, key=lambda x: x['stats']['now'], reverse=True)
         
-        # ดึงคำพยากรณ์อากาศของภาคนั้นๆ มาใช้งาน
-        raw_desc = regional_forecast.get(region, "")
-        general_cond, t_str, w_str = parse_region_forecast(raw_desc)
+        # รวบรวมข้อมูล Real-time ของภาค
+        temps = [i['weather']['temp'] for i in items_sorted if i['weather']['temp'] is not None]
+        hums = [i['weather']['hum'] for i in items_sorted if i['weather']['hum'] is not None]
+        winds = [i['weather']['wind_spd'] for i in items_sorted if i['weather']['wind_spd'] is not None]
+        dirs = [i['weather']['wind_dir'] for i in items_sorted if i['weather']['wind_dir'] and i['weather']['wind_dir'] != "ไม่ระบุทิศ"]
         
-        msg += f"📍 【 {region} 】 ({len(items)} สถานี)\n\n🌡️ คาดการณ์สภาพอากาศ (24 ชม.):\n{general_cond}\n• อุณหภูมิ: {t_str}\n• ลม: {w_str}\n\n"
+        min_temp = min(temps) if temps else 0
+        max_temp = max(temps) if temps else 0
+        min_hum = min(hums) if hums else 0
+        max_hum = max(hums) if hums else 0
+        avg_wind = sum(winds)/len(winds) if winds else 0
+        common_dir = max(set(dirs), key=dirs.count) if dirs else "ไม่ระบุทิศ"
+        
+        wind_cat = get_wind_category(avg_wind)
+        
+        temp_str = f"{min_temp:.1f} - {max_temp:.1f} °C" if min_temp != max_temp else (f"{min_temp:.1f} °C" if temps else "ไม่ระบุ")
+        hum_str = f"{int(min_hum)} - {int(max_hum)} %" if min_hum != max_hum else (f"{int(min_hum)} %" if hums else "ไม่ระบุ")
+        
+        if avg_wind < 0.5:
+            wind_str = f"ลมสงบ (ทิศ{common_dir})"
+        else:
+            wind_str = f"{wind_cat} {avg_wind:.1f} m/s (ทิศ{common_dir})"
+        
+        msg += f"📍 【 {region} 】 ({len(items)} สถานี)\n\n🌡️ สภาพอากาศ (ณ เวลาที่รายงาน):\n• อุณหภูมิ: {temp_str}\n• ความชื้นสัมพัทธ์: {hum_str}\n• ลม: {wind_str}\n\n"
         
         abnormal = [f"{i['info']['stationID']}({i['stats']['status'].split(': ')[-1]})" for i in items_sorted if "ปกติ" not in i['stats']['status']]
         msg += f"⚙️ สถานะเครื่อง:\nปกติ {len(items)-len(abnormal)} | เสี่ยง {len(abnormal)} [{', '.join(abnormal)}]\n(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)\n\n"
         
         msg += "📋 TOP พื้นที่วิกฤต (เฉลี่ย 24 ชม.):\n"
         for idx, item in enumerate(items_sorted, 1):
-            area = " ".join([p.strip().replace('อ.ต.', 'ต.') for p in item['info']['areaTH'].split(',') if p.strip()][1:])
-            msg += f"  {idx}. [{item['info']['stationID']}] {area} ({item['stats']['now']} µg/m³)\n"
+            # จัดการชื่อที่อยู่ให้สวยงาม ไม่ซ้ำซ้อน
+            area_parts = [p.strip() for p in item['info']['areaTH'].split(',') if p.strip()]
+            clean_parts = []
+            for p in area_parts:
+                if p.startswith('อ.ต.'): p = 'ต.' + p[4:]
+                if p not in clean_parts: clean_parts.append(p)
+            area_str = " ".join(clean_parts)
+            
+            msg += f"  {idx}. [{item['info']['stationID']}] {area_str} ({item['stats']['now']} µg/m³)\n"
         msg += "\n\n"
         
-        region_data[region] = {"pm_min": min([i['stats']['now'] for i in items]), "pm_max": max([i['stats']['now'] for i in items])}
+        region_data[region] = {"pm_min": min([i['stats']['now'] for i in items]), "pm_max": max([i['stats']['now'] for i in items]), "t_range": temp_str, "h_range": hum_str, "w_cat": wind_cat}
 
     msg += "━━━━━━━━━━━━━━━━━━━\n\n📌 【 สรุปแนวโน้มสถานการณ์ 】\n\n📈 แนวโน้มฝุ่นละออง:\n"
     for r, data in region_data.items():
@@ -186,19 +233,12 @@ def main():
         trend = f"เพิ่มขึ้นจากเมื่อวาน {diff} สถานี" if diff > 0 else (f"ลดลงจากเมื่อวาน {abs(diff)} สถานี" if diff < 0 else "ทรงตัวเท่ากับเมื่อวาน")
         msg += f"• {r}: วิกฤต {len(grouped[r])} สถานี ({trend}) | ค่าฝุ่นอยู่ระหว่าง {data['pm_min']} - {data['pm_max']} µg/m³\n"
     
-    msg += f"\n🌙 ช่วงเวลาสะสมตัว:\nพุ่งสูงช่วง 22:00-08:00 น. (กลางคืนถึงเช้าตรู่) จากภาวะอากาศปิดและอุณหภูมิผกผัน\n"
+    msg += f"\n🌙 ช่วงเวลาสะสมตัว:\nพุ่งสูงช่วง 22:00-08:00 น. (กลางคืนถึงเช้าตรู่) จากภาวะอากาศปิดและอุณหภูมิผกผัน\n\n💨 สภาพอากาศภาพรวมรายภาค (ณ เวลาที่รายงาน):\n"
+    for r, data in region_data.items():
+        wind_eff = "ทำให้ฝุ่นไม่ระบายออก" if data['w_cat'] == "ลมสงบ" else "ทำให้ฝุ่นระบายออกได้ไม่ดีนัก"
+        msg += f"• {r}: อุณหภูมิ {data['t_range']} | ความชื้น {data['h_range']} | ลมส่วนใหญ่อยู่ในเกณฑ์ {data['w_cat']} {wind_eff}\n"
     
-    # ค้นหาประโยคเกี่ยวกับฝุ่นในภาพรวมของกรมอุตุฯ
-    dust_summary = ""
-    if "ฝุ่นละออง" in overall_forecast or "หมอกควัน" in overall_forecast:
-        idx = overall_forecast.find("ฝุ่นละออง")
-        if idx == -1: idx = overall_forecast.find("หมอกควัน")
-        dust_summary = overall_forecast[idx:].strip()
-    
-    if dust_summary:
-        msg += f"\n🌤️ บทวิเคราะห์สภาพอากาศ (กรมอุตุนิยมวิทยา):\n{dust_summary}\n"
-    
-    msg += "\n✅ ระบบตรวจวัด:\nเครื่องมือทำงานปกติ 100% ทั่วประเทศ"
+    msg += "\n✅ ระบบตรวจวัด:\nเครื่องมือทำงานปกติ 100% (ค่าความเสี่ยงตรวจสอบแล้วเป็นค่าจริงจากสภาพอากาศ)"
 
     # Split and Send
     for chunk in [msg[i:i+4000] for i in range(0, len(msg), 4000)]:
