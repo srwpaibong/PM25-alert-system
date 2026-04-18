@@ -168,7 +168,7 @@ def main():
     
     history = load_log()
     
-    # ระบบจำสถิติข้ามวัน (โอนยอดวันนี้ไปเป็นเมื่อวาน ตอน 6 โมงเช้า)
+    # ระบบจำสถิติข้ามวัน
     if history.get('last_date') != today_str:
         history['yesterday_counts'] = history.get('today_counts', {})
         history['last_date'] = today_str
@@ -226,7 +226,7 @@ def main():
     for item in current_red_stations:
         grouped_stations[item['region']].append(item)
         
-    # อัปเดตยอดสูงสุดของวันนี้ (เพื่อเตรียมไว้เป็นยอดเมื่อวาน ในรอบพรุ่งนี้เช้า)
+    # อัปเดตยอดสูงสุดของวันนี้
     for r, items in grouped_stations.items():
         history.setdefault('today_counts', {})
         history['today_counts'][r] = max(history['today_counts'].get(r, 0), len(items))
@@ -243,7 +243,7 @@ def main():
     messages_to_send = []
     current_msg = header_msg
     
-    region_summary_data = {} # เก็บข้อมูลไว้สรุปตอนท้าย
+    region_summary_data = {} 
     
     # --- BODY (แยกรายภาค) ---
     for region, items in grouped_stations.items():
@@ -264,8 +264,10 @@ def main():
         common_dir = max(set(dirs), key=dirs.count) if dirs else "ไม่ระบุทิศ"
         
         wind_cat = get_wind_category(avg_wind)
+        
+        # Format Range
         temp_str = f"{min_temp:.1f} - {max_temp:.1f} °C" if min_temp != max_temp else f"{min_temp:.1f} °C"
-        hum_str = f"{min_hum} - {max_hum} %" if min_hum != max_hum else f"{min_hum} %"
+        hum_str = f"{int(min_hum)} - {int(max_hum)} %" if min_hum != max_hum else f"{int(min_hum)} %"
         
         if avg_wind < 0.5:
             wind_str = f"ลมสงบ (ทิศ{common_dir})"
@@ -277,7 +279,6 @@ def main():
         region_text += f"• ความชื้นสัมพัทธ์: {hum_str}\n"
         region_text += f"• ลม: {wind_str}\n\n"
         
-        # เก็บข้อมูลไว้ใช้ส่วน Conclusion
         pm25_vals = [i['stats']['now'] for i in items_sorted]
         region_summary_data[region] = {
             "count": len(items),
@@ -304,11 +305,13 @@ def main():
                 
         abnormal_count = len(abnormal_stations)
         
+        region_text += f"⚙️ สถานะเครื่อง: \n"
         if abnormal_count == 0:
-            region_text += f"⚙️ สถานะเครื่อง:\nปกติ {normal_count} สถานี\n(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)\n\n"
+            region_text += f"ปกติ {normal_count} สถานี\n"
         else:
             abnormal_str = ", ".join(abnormal_stations)
-            region_text += f"⚙️ สถานะเครื่อง: \nปกติ {normal_count} | เสี่ยง {abnormal_count} [{abnormal_str}]\n(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)\n\n"
+            region_text += f"ปกติ {normal_count} | เสี่ยง {abnormal_count} [{abnormal_str}]\n"
+        region_text += f"(จนท.ตรวจสอบแล้ว ยืนยันระบบทำงานปกติทุกจุด)\n\n"
         
         # Station List Processing
         region_text += f"📋 TOP พื้นที่วิกฤต (เฉลี่ย 24 ชม.):\n"
