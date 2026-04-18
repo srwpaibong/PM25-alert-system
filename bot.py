@@ -35,7 +35,7 @@ def format_thai_datetime(dt):
     year = dt.year + 543
     return f"{dt.day} {thai_months[dt.month]} {year} | {dt.strftime('%H:%M')} น."
 
-# --- NEW Data Fetching (TMD Daily Forecast API) ---
+# --- แก้ไขระบบดึงข้อมูลพยากรณ์อากาศกรมอุตุฯ (TMD Daily Forecast API) ---
 def get_daily_forecast():
     url = "https://data.tmd.go.th/api/DailyForecast/v2/?uid=api&ukey=api12345&format=json"
     try:
@@ -44,13 +44,28 @@ def get_daily_forecast():
         
         overall = forecast_data.get('OverallDescriptionThai', '')
         
+        # จัดการบั๊กโครงสร้าง JSON ของกรมอุตุฯ ที่ซ้อนทับกัน
+        regions_list = []
+        if 'RegionsForecast' in forecast_data:
+            rf = forecast_data['RegionsForecast']
+            if isinstance(rf, list): 
+                regions_list = rf
+            elif isinstance(rf, dict) and 'RegionForecast' in rf: 
+                regions_list = rf['RegionForecast']
+        elif 'RegionForecast' in forecast_data:
+            regions_list = forecast_data['RegionForecast']
+            
+        # ถ้าเผลอส่งมาเป็นก้อนเดียว (ไม่เป็น List) ให้ครอบด้วย List
+        if isinstance(regions_list, dict):
+            regions_list = [regions_list]
+            
         regions_data = {}
-        for r in forecast_data.get('RegionsForecast', []):
-            name = r.get('RegionNameThai', '')
-            desc = r.get('DescriptionThai', '')
+        for r in regions_list:
+            name = r.get('RegionNameThai', '').strip()
+            desc = r.get('DescriptionThai', '').strip()
             # แปลงชื่อภาคของอุตุฯ ให้ตรงกับ Air4Thai
             if 'กรุงเทพ' in name: name = 'กรุงเทพฯและปริมณฑล'
-            elif 'ใต้' in name: name = 'ภาคใต้' # รวมฝั่งอ่าวไทยและอันดามัน
+            elif 'ใต้' in name: name = 'ภาคใต้' 
             regions_data[name] = desc
             
         return overall, regions_data
@@ -61,13 +76,13 @@ def get_daily_forecast():
 def parse_region_forecast(desc):
     if not desc: return "ไม่พบข้อมูลพยากรณ์อากาศ", "ไม่ระบุ", "ไม่ระบุ"
     
-    # ใช้ Regex ดึงข้อมูลอุณหภูมิและลม
-    t_min_match = re.search(r'อุณหภูมิต่ำสุด\s*([0-9\-]+)\s*องศา', desc)
-    t_max_match = re.search(r'อุณหภูมิสูงสุด\s*([0-9\-]+)\s*องศา', desc)
-    wind_match = re.search(r'ลม(.*?)\s*ความเร็ว\s*([0-9\-]+)\s*กม./ชม.', desc)
+    # ใช้ Regex ดึงข้อมูลอุณหภูมิและลมอย่างแม่นยำ
+    t_min_match = re.search(r'อุณหภูมิต่ำสุด\s*([0-9\-\.\s]+)\s*องศา', desc)
+    t_max_match = re.search(r'อุณหภูมิสูงสุด\s*([0-9\-\.\s]+)\s*องศา', desc)
+    wind_match = re.search(r'ลม(.*?)\s*ความเร็ว\s*([0-9\-\.\s]+)\s*กม./ชม.', desc)
     
-    t_str = f"{t_min_match.group(1)} ถึง {t_max_match.group(1)} °C" if (t_min_match and t_max_match) else "ไม่ระบุ"
-    w_str = f"{wind_match.group(1)} ({wind_match.group(2)} กม./ชม.)" if wind_match else "ไม่ระบุ"
+    t_str = f"{t_min_match.group(1).strip()} ถึง {t_max_match.group(1).strip()} °C" if (t_min_match and t_max_match) else "ไม่ระบุ"
+    w_str = f"{wind_match.group(1).strip()} ({wind_match.group(2).strip()} กม./ชม.)" if wind_match else "ไม่ระบุ"
     
     # ดึงเฉพาะประโยคแรกๆ ที่เป็นการอธิบายสภาพอากาศทั่วไปมาโชว์
     general_cond = desc.split('อุณหภูมิต่ำสุด')[0].strip()
@@ -148,7 +163,7 @@ def main():
     for region, items in grouped.items():
         items_sorted = sorted(items, key=lambda x: x['stats']['now'], reverse=True)
         
-        # ดึงคำพยากรณ์อากาศของภาคนั้นๆ มาแปลงร่าง
+        # ดึงคำพยากรณ์อากาศของภาคนั้นๆ มาใช้งาน
         raw_desc = regional_forecast.get(region, "")
         general_cond, t_str, w_str = parse_region_forecast(raw_desc)
         
